@@ -1,0 +1,201 @@
+{
+  "nav": {
+    "overview": "概要",
+    "devices": "デバイス",
+    "settings": "設定",
+    "logs": "ログ"
+  },
+  "state": {
+    "Running": "接続中",
+    "Stopped": "切断済み",
+    "Starting": "接続しています",
+    "NeedsLogin": "未ログイン",
+    "NeedsMachineAuth": "承認待ち",
+    "NoState": "起動しています",
+    "serviceStopped": "サービス停止中"
+  },
+  "common": {
+    "copy": "コピー",
+    "copied": "コピーしました",
+    "copyFailed": "コピーできませんでした",
+    "save": "保存",
+    "cancel": "キャンセル",
+    "failed": "操作に失敗しました",
+    "saved": "保存しました",
+    "retry": "再試行"
+  },
+  "bridge": {
+    "missingTitle": "コマンドを実行できません",
+    "missingDesc": "このページは KernelSU または APatch のマネージャーから開いてください。"
+  },
+  "service": {
+    "stoppedTitle": "Tailscale サービスが停止しています",
+    "stoppedDesc": "tailnet に接続するには、サービスを起動してください。",
+    "start": "サービスを起動",
+    "started": "サービスを起動しました",
+    "loadFailed": "サービスの状態を取得できません"
+  },
+  "overview": {
+    "connect": "tailnet に接続",
+    "connectDesc": "切断してもサービスは動作し続けるため、いつでも再接続できます。",
+    "addresses": "このデバイス",
+    "ipv4": "IPv4",
+    "ipv6": "IPv6",
+    "magicDNS": "MagicDNS 名",
+    "exitNode": "出口ノード",
+    "exitNodeNone": "使用しない",
+    "exitNodeChange": "変更",
+    "health": "ヘルスチェック",
+    "version": "バージョン",
+    "moduleVersion": "モジュール",
+    "tailscaleVersion": "Tailscale",
+    "mode": "ネットワーク方式",
+    "modeTun": "カーネル TUN（{{dev}}）",
+    "modeUserspace": "ユーザー空間"
+  },
+  "login": {
+    "title": "Tailscale にログイン",
+    "desc": "このデバイスはまだログインしていません。ログインすると tailnet に参加できます。",
+    "button": "ログイン",
+    "waiting": "ログイン用リンクを取得しています…",
+    "drawerTitle": "ログインを完了",
+    "drawerDesc": "リンクをブラウザで開くか、別のデバイスで QR コードを読み取ってください。",
+    "openBrowser": "ブラウザで開く",
+    "copyLink": "リンクをコピー",
+    "success": "ログインしました"
+  },
+  "machineAuth": {
+    "title": "管理者の承認待ち",
+    "desc": "ログインは完了しています。管理コンソールで承認されると接続できます。",
+    "open": "管理コンソールを開く"
+  },
+  "devices": {
+    "search": "名前または IP で検索",
+    "empty": "ほかのデバイスはありません",
+    "emptyDesc": "tailnet にはまだほかのデバイスがありません。",
+    "noMatch": "一致するデバイスはありません",
+    "noMatchDesc": "別のキーワードで検索してください。",
+    "online": "オンライン",
+    "offline": "オフライン",
+    "lastSeen": "{{time}}にオンライン",
+    "exitNode": "出口ノード",
+    "inUse": "使用中",
+    "count": "{{total}} 台中 {{online}} 台がオンライン",
+    "self": "このデバイス"
+  },
+  "peer": {
+    "magicDNS": "MagicDNS 名",
+    "os": "OS",
+    "user": "所有者",
+    "connection": "接続方式",
+    "direct": "直接接続",
+    "relay": "中継（{{region}}）",
+    "idle": "アイドル",
+    "traffic": "通信量",
+    "trafficValue": "受信 {{rx}} · 送信 {{tx}}",
+    "routes": "サブネットルート",
+    "tags": "タグ",
+    "keyExpiry": "キーの有効期限",
+    "expired": "期限切れ",
+    "useExitNode": "出口ノードとして使う",
+    "stopExitNode": "この出口ノードの使用をやめる",
+    "exitNodeOn": "出口ノードを切り替えました",
+    "exitNodeOff": "出口ノードの使用をやめました"
+  },
+  "settings": {
+    "exitNode": {
+      "title": "出口ノード",
+      "desc": "このデバイスのインターネット通信をほかのデバイス経由で送ります。",
+      "select": "使用する出口ノード",
+      "none": "使用しない",
+      "offline": "オフライン",
+      "allowLan": "ローカルネットワークへのアクセスを許可",
+      "allowLanDesc": "出口ノードの使用中も、LAN 上のデバイスに直接アクセスできます。"
+    },
+    "advertise": {
+      "title": "このデバイスのネットワークを共有",
+      "exitNode": "出口ノードとして動作",
+      "exitNodeDesc": "ほかのデバイスがこのデバイス経由でインターネットにアクセスできます。管理コンソールでの承認が必要です。",
+      "routes": "サブネットルート",
+      "routesDesc": "カンマ区切り（例：192.168.1.0/24）。管理コンソールでの承認が必要です。",
+      "routesInvalid": "CIDR 形式で入力してください（例：192.168.1.0/24）"
+    },
+    "network": {
+      "title": "ネットワーク",
+      "acceptRoutes": "サブネットルートを使用",
+      "acceptRoutesDesc": "ほかのデバイスが共有するサブネットにアクセスします。",
+      "acceptDNS": "MagicDNS を使用",
+      "acceptDNSDesc": "Tailscale の DNS でデバイス名を解決します。",
+      "shieldsUp": "受信接続をブロック",
+      "shieldsUpDesc": "ほかのデバイスからこのデバイスへ接続できなくなります。"
+    },
+    "device": {
+      "title": "デバイス名",
+      "hostname": "ホスト名",
+      "hostnameDesc": "空欄にするとデバイスのモデル名を使います。"
+    },
+    "service": {
+      "title": "サービス",
+      "mode": "ネットワーク方式",
+      "modeAuto": "自動",
+      "modeTun": "TUN",
+      "modeUserspace": "ユーザー空間",
+      "modeDesc": "自動：/dev/net/tun があればカーネル TUN、なければユーザー空間ネットワークを使います。",
+      "port": "UDP ポート",
+      "portDesc": "0 にするとランダムなポートを使います。",
+      "portInvalid": "0〜65535 のポートを指定してください",
+      "restartNeeded": "変更はサービスの再起動後に反映されます。",
+      "restart": "サービスを再起動",
+      "stop": "サービスを停止",
+      "restarted": "サービスを再起動しました",
+      "stopped": "サービスを停止しました",
+      "stopConfirmTitle": "サービスを停止しますか？",
+      "stopConfirmDesc": "このデバイスは tailnet から切断され、tailnet 経由の接続（adb など）も切れます。"
+    },
+    "ui": {
+      "title": "表示",
+      "language": "言語",
+      "system": "システムに合わせる",
+      "theme": "テーマ",
+      "light": "ライト",
+      "dark": "ダーク"
+    },
+    "account": {
+      "title": "アカウント",
+      "logout": "ログアウト",
+      "logoutConfirmTitle": "ログアウトしますか？",
+      "logoutConfirmDesc": "このデバイスは tailnet から削除され、再度ログインが必要になります。",
+      "loggedOut": "ログアウトしました",
+      "current": "使用中",
+      "switch": "切り替え",
+      "switched": "アカウントを切り替えました",
+      "remove": "削除",
+      "removed": "アカウントを削除しました",
+      "removeConfirmTitle": "このアカウントを削除しますか？",
+      "removeConfirmDesc": "{{account}} のログイン情報をこのデバイスから削除します。切り替えるには再度ログインが必要です。",
+      "add": "アカウントを追加"
+    },
+    "about": {
+      "title": "このアプリについて",
+      "project": "プロジェクトページ",
+      "admin": "Tailscale 管理コンソール"
+    }
+  },
+  "logs": {
+    "tailscaled": "tailscaled",
+    "service": "サービス",
+    "empty": "ログはまだありません",
+    "copyAll": "すべてコピー",
+    "wrap": "折り返し"
+  },
+  "ping": {
+    "title": "遅延",
+    "pause": "一時停止",
+    "resume": "再開",
+    "latest": "現在",
+    "avg": "平均",
+    "min": "最小",
+    "loss": "パケットロス",
+    "timeout": "タイムアウト"
+  }
+}

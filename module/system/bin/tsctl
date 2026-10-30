@@ -7,8 +7,15 @@
 #   restart            stop, then start (re-reads settings.conf)
 #   status [--json]    daemon status, followed by `tailscale status`
 #   is-running         exit 0 when the daemon is running
-#   log [-f] [service] show the tailscaled log, or the service log
+#   log [-f] [-n N] [service]
+#                      show the tailscaled log, or the service log
 #   version            module and tailscale versions
+#   cli ARGS...        run the tailscale CLI against this daemon
+#   login [cancel]     start an interactive login in the background (its
+#                      URL appears as AuthURL in `cli status --json`), or
+#                      stop a pending one
+#   config [--json]    show settings.conf values
+#   config set KEY VAL change a settings.conf value (applies on restart)
 #
 # Internal commands, used by the module scripts:
 #   boot               start at boot (service.sh)
@@ -285,17 +292,97 @@ cmd_status() {
 
 cmd_log() {
 	_follow=""
-	if [ "${1:-}" = -f ]; then
-		_follow=1
+	_lines=200
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+		-f) _follow=1 ;;
+		-n)
+			case "${2:-}" in
+			'' | *[!0-9]*) echo "log: -n needs a number" >&2 && return 2 ;;
+			esac
+			_lines=$2
+			shift
+			;;
+		*) break ;;
+		esac
 		shift
-	fi
+	done
 	_file=$DAEMON_LOG
 	[ "${1:-}" = service ] && _file=$SERVICE_LOG
+	[ -f "$_file" ] || return 0
 	if [ -n "$_follow" ]; then
-		tail -n 100 -f "$_file"
+		tail -n "$_lines" -f "$_file"
 	else
-		tail -n 200 "$_file"
+		tail -n "$_lines" "$_file"
 	fi
+}
+
+# cmd_login starts `tailscale login` detached, so that a caller without a
+# terminal (the WebUI) can return at once and poll for the URL. A login
+# still waiting from an earlier call is replaced.
+cmd_login() {
+	supervisor_running || {
+		echo "tailscaled is not running" >&2
+		return 1
+	}
+	for _p in $(find_pids "--socket=$SOCKET login"); do
+		kill "$_p" 2>/dev/null
+	done
+	if [ "${1:-}" = cancel ]; then
+		echo "login cancelled"
+		return 0
+	fi
+	if command -v setsid >/dev/null 2>&1; then
+		TS_BE_CLI=1 setsid "$TAILSCALED" --socket="$SOCKET" login </dev/null >/dev/null 2>&1 &
+	else
+		TS_BE_CLI=1 nohup "$TAILSCALED" --socket="$SOCKET" login </dev/null >/dev/null 2>&1 &
+	fi
+	echo "login started"
+}
+
+# config_valid KEY VALUE reports whether VALUE is acceptable for KEY. Only
+# these keys can be set, and only to values that need no shell quoting,
+# since settings.conf is sourced.
+config_valid() {
+	case "$1" in
+	TS_TUN_MODE) case "$2" in auto | tun | userspace) return 0 ;; esac ;;
+	TS_FIREWALL_MODE) case "$2" in iptables | nftables) return 0 ;; esac ;;
+	TS_PORT)
+		case "$2" in '' | *[!0-9]*) return 1 ;; esac
+		[ "${#2}" -le 5 ] && [ "$2" -le 65535 ] && return 0
+		;;
+	TS_VERBOSE) case "$2" in [0-9]) return 0 ;; esac ;;
+	esac
+	return 1
+}
+
+cmd_config() {
+	if [ "${1:-}" = set ]; then
+		config_valid "${2:-}" "${3:-}" || {
+			echo "config: invalid setting: ${2:-} ${3:-}" >&2
+			return 2
+		}
+		ensure_dirs
+		[ -f "$CONFIG" ] || cp "$MODDIR/defaults/settings.conf" "$CONFIG"
+		if grep -q "^$2=" "$CONFIG"; then
+			sed -i "s|^$2=.*|$2=$3|" "$CONFIG"
+		else
+			echo "$2=$3" >>"$CONFIG"
+		fi
+		log "config: $2=$3"
+		return 0
+	fi
+	load_config
+	if [ "${1:-}" = --json ]; then
+		printf '{"tunMode":"%s","port":%s,"firewallMode":"%s","verbose":%s}\n' \
+			"$TS_TUN_MODE" "$TS_PORT" "$TS_FIREWALL_MODE" "$TS_VERBOSE"
+		return 0
+	fi
+	echo "TS_TUN_MODE=$TS_TUN_MODE"
+	echo "TS_PORT=$TS_PORT"
+	echo "TS_FIREWALL_MODE=$TS_FIREWALL_MODE"
+	echo "TS_VERBOSE=$TS_VERBOSE"
+	echo "TS_EXTRA_ARGS=$TS_EXTRA_ARGS"
 }
 
 start_watcher() {
@@ -340,7 +427,7 @@ cmd_module_event() {
 }
 
 usage() {
-	sed -n '2,13s/^# \{0,1\}//p' "$0"
+	sed -n '2,18s/^# \{0,1\}//p' "$0"
 }
 
 cmd=${1:-}
@@ -356,6 +443,9 @@ version)
 	echo "module:    $(module_version)"
 	echo "tailscale: $(tailscale_version)"
 	;;
+cli) ts "$@" ;;
+login) cmd_login "$@" ;;
+config) cmd_config "$@" ;;
 boot) cmd_boot ;;
 supervise) cmd_supervise ;;
 module-event) cmd_module_event "$@" ;;

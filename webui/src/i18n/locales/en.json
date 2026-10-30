@@ -1,0 +1,201 @@
+{
+  "nav": {
+    "overview": "Overview",
+    "devices": "Devices",
+    "settings": "Settings",
+    "logs": "Logs"
+  },
+  "state": {
+    "Running": "Connected",
+    "Stopped": "Disconnected",
+    "Starting": "Connecting",
+    "NeedsLogin": "Logged out",
+    "NeedsMachineAuth": "Awaiting approval",
+    "NoState": "Starting",
+    "serviceStopped": "Service stopped"
+  },
+  "common": {
+    "copy": "Copy",
+    "copied": "Copied",
+    "copyFailed": "Couldn't copy",
+    "save": "Save",
+    "cancel": "Cancel",
+    "failed": "Something went wrong",
+    "saved": "Saved",
+    "retry": "Retry"
+  },
+  "bridge": {
+    "missingTitle": "Can't run commands",
+    "missingDesc": "Open this page from the KernelSU or APatch manager."
+  },
+  "service": {
+    "stoppedTitle": "Tailscale isn't running",
+    "stoppedDesc": "Start the service to connect to your tailnet.",
+    "start": "Start service",
+    "started": "Service started",
+    "loadFailed": "Couldn't read the service status"
+  },
+  "overview": {
+    "connect": "Connect to tailnet",
+    "connectDesc": "While disconnected the service keeps running, so you can reconnect any time.",
+    "addresses": "This device",
+    "ipv4": "IPv4",
+    "ipv6": "IPv6",
+    "magicDNS": "MagicDNS name",
+    "exitNode": "Exit node",
+    "exitNodeNone": "None",
+    "exitNodeChange": "Change",
+    "health": "Health",
+    "version": "Version",
+    "moduleVersion": "Module",
+    "tailscaleVersion": "Tailscale",
+    "mode": "Networking",
+    "modeTun": "Kernel TUN ({{dev}})",
+    "modeUserspace": "Userspace"
+  },
+  "login": {
+    "title": "Log in to Tailscale",
+    "desc": "This device isn't logged in yet. Log in to join your tailnet.",
+    "button": "Log in",
+    "waiting": "Getting the login link…",
+    "drawerTitle": "Finish logging in",
+    "drawerDesc": "Open the link in a browser, or scan the QR code with another device.",
+    "openBrowser": "Open in browser",
+    "copyLink": "Copy link",
+    "success": "Logged in"
+  },
+  "machineAuth": {
+    "title": "Waiting for approval",
+    "desc": "This device is logged in, but an admin must approve it before it can connect.",
+    "open": "Open admin console"
+  },
+  "devices": {
+    "search": "Search by name or IP",
+    "empty": "No other devices",
+    "emptyDesc": "Your tailnet has no other devices yet.",
+    "noMatch": "No matching devices",
+    "noMatchDesc": "Try a different search.",
+    "online": "Online",
+    "offline": "Offline",
+    "lastSeen": "Seen {{time}}",
+    "exitNode": "Exit node",
+    "inUse": "In use",
+    "count": "{{online}} of {{total}} online",
+    "self": "This device"
+  },
+  "peer": {
+    "magicDNS": "MagicDNS name",
+    "os": "OS",
+    "user": "Owner",
+    "connection": "Connection",
+    "direct": "Direct",
+    "relay": "Relayed ({{region}})",
+    "idle": "Idle",
+    "traffic": "Traffic",
+    "trafficValue": "{{rx}} received · {{tx}} sent",
+    "routes": "Subnet routes",
+    "tags": "Tags",
+    "keyExpiry": "Key expiry",
+    "expired": "Expired",
+    "useExitNode": "Use as exit node",
+    "stopExitNode": "Stop using this exit node",
+    "exitNodeOn": "Exit node changed",
+    "exitNodeOff": "Stopped using the exit node"
+  },
+  "settings": {
+    "exitNode": {
+      "title": "Exit node",
+      "desc": "Route this device's internet traffic through another device.",
+      "select": "Exit node to use",
+      "none": "None",
+      "offline": "offline",
+      "allowLan": "Allow local network access",
+      "allowLanDesc": "Keep reaching devices on your LAN directly while using an exit node."
+    },
+    "advertise": {
+      "title": "Share this device's network",
+      "exitNode": "Run as exit node",
+      "exitNodeDesc": "Let other devices reach the internet through this one. Needs approval in the admin console.",
+      "routes": "Subnet routes",
+      "routesDesc": "Comma separated, e.g. 192.168.1.0/24. Needs approval in the admin console.",
+      "routesInvalid": "Enter networks in CIDR form, e.g. 192.168.1.0/24"
+    },
+    "network": {
+      "title": "Network",
+      "acceptRoutes": "Use subnet routes",
+      "acceptRoutesDesc": "Reach subnets shared by other devices.",
+      "acceptDNS": "Use MagicDNS",
+      "acceptDNSDesc": "Resolve device names with Tailscale DNS.",
+      "shieldsUp": "Block incoming connections",
+      "shieldsUpDesc": "Other devices can't initiate connections to this one."
+    },
+    "device": {
+      "title": "Device name",
+      "hostname": "Hostname",
+      "hostnameDesc": "Leave empty to use the device model."
+    },
+    "service": {
+      "title": "Service",
+      "mode": "Networking",
+      "modeAuto": "Auto",
+      "modeTun": "TUN",
+      "modeUserspace": "Userspace",
+      "modeDesc": "Auto uses kernel TUN when /dev/net/tun exists, userspace networking otherwise.",
+      "port": "UDP port",
+      "portDesc": "0 picks a random port.",
+      "portInvalid": "Use a port from 0 to 65535",
+      "restartNeeded": "Changes apply after the service restarts.",
+      "restart": "Restart service",
+      "stop": "Stop service",
+      "restarted": "Service restarted",
+      "stopped": "Service stopped",
+      "stopConfirmTitle": "Stop the service?",
+      "stopConfirmDesc": "This device leaves the tailnet, and connections over it (such as adb) drop."
+    },
+    "ui": {
+      "title": "Appearance",
+      "language": "Language",
+      "system": "System",
+      "theme": "Theme",
+      "light": "Light",
+      "dark": "Dark"
+    },
+    "account": {
+      "title": "Account",
+      "logout": "Log out",
+      "logoutConfirmTitle": "Log out?",
+      "logoutConfirmDesc": "This device is removed from the tailnet, and you'll need to log in again.",
+      "loggedOut": "Logged out",
+      "current": "Current",
+      "switch": "Switch",
+      "switched": "Switched account",
+      "remove": "Remove",
+      "removed": "Account removed",
+      "removeConfirmTitle": "Remove this account?",
+      "removeConfirmDesc": "This device forgets the login for {{account}}; you'll need to log in again to switch back.",
+      "add": "Add account"
+    },
+    "about": {
+      "title": "About",
+      "project": "Project page",
+      "admin": "Tailscale admin console"
+    }
+  },
+  "logs": {
+    "tailscaled": "tailscaled",
+    "service": "Service",
+    "empty": "No log yet",
+    "copyAll": "Copy all",
+    "wrap": "Wrap"
+  },
+  "ping": {
+    "title": "Latency",
+    "pause": "Pause",
+    "resume": "Resume",
+    "latest": "Now",
+    "avg": "Average",
+    "min": "Best",
+    "loss": "Loss",
+    "timeout": "Timeout"
+  }
+}

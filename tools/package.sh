@@ -24,8 +24,12 @@ sed -e "s|@VERSION@|$VERSION|" \
 	"$ROOT/module/module.prop.in" >"$STAGE/module.prop"
 cp "$BIN" "$STAGE/system/bin/tailscaled"
 cp "$OUT_DIR/buildinfo.txt" "$STAGE/buildinfo.txt"
-if [ -d "$ROOT/webui/dist" ]; then
+if [ -f "$ROOT/webui/dist/index.html" ]; then
 	cp -R "$ROOT/webui/dist" "$STAGE/webroot"
+elif [ -n "${CI:-}" ]; then
+	die "webui/dist missing; run tools/build-webui.sh first"
+else
+	echo "warning: webui/dist missing; packaging without the WebUI" >&2
 fi
 
 # Fixed timestamps and sorted entries keep the zip reproducible.

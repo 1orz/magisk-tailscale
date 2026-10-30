@@ -34,7 +34,7 @@ jobs:
       zip: ${{ steps.package.outputs.zip }}
       failed_patch: ${{ steps.failed.outputs.patch }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Use requested upstream version
         if: inputs.ts_version != ''
@@ -65,7 +65,7 @@ jobs:
           fi
 
       - name: Cache Go toolchain and modules
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cache/tsgo
@@ -88,11 +88,20 @@ jobs:
       - name: Smoke test
         run: tools/smoke.sh
 
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+
+      - name: Build WebUI
+        run: tools/build-webui.sh
+
       - name: Package
         id: package
         run: tools/package.sh
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: module
           path: dist/

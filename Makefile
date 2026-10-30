@@ -1,4 +1,4 @@
-.PHONY: all fetch patch test build package smoke clean
+.PHONY: all fetch patch test build webui package smoke clean
 
 all: package
 
@@ -14,11 +14,14 @@ test: patch
 build: test
 	tools/build-go.sh
 
-package: build
+webui:
+	tools/build-webui.sh
+
+package: build webui
 	tools/package.sh
 
 smoke:
 	tools/smoke.sh
 
 clean:
-	rm -rf build dist
+	rm -rf build dist webui/dist

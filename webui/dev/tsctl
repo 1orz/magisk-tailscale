@@ -1,0 +1,95 @@
+#!/bin/sh
+# Development stand-in for the module's tsctl (see dev/bridge.ts). Status
+# comes from this machine's tailscale; commands that would change it are
+# only logged, unless TSNEXT_DEV_WRITE=1. Service start/stop and settings
+# are simulated in dev/.state.
+
+DEV_DIR=$(cd "$(dirname "$0")" && pwd)
+STATE=$DEV_DIR/.state
+CONF=$STATE/settings.conf
+mkdir -p "$STATE"
+[ -f "$CONF" ] || printf 'TS_TUN_MODE=auto\nTS_PORT=41641\nTS_FIREWALL_MODE=iptables\nTS_VERBOSE=0\n' >"$CONF"
+
+running=true
+[ -f "$STATE/stopped" ] && running=false
+
+skip() {
+	echo "dev: not running: $*" >&2
+	echo "dev: set TSNEXT_DEV_WRITE=1 to pass it to the local tailscale" >&2
+}
+
+cmd=$1
+[ "$#" -gt 0 ] && shift
+case "$cmd" in
+status)
+	. "$CONF"
+	pid=null
+	[ "$running" = true ] && pid=4242
+	tun=tailscale0
+	[ "$TS_TUN_MODE" = userspace ] && tun=userspace-networking
+	printf '{"running":%s,"pid":%s,"tunMode":"%s","tun":"%s","moduleVersion":"v0.0.0-dev","tailscaleVersion":"%s","socket":"/dev/null"}\n' \
+		"$running" "$pid" "$TS_TUN_MODE" "$tun" "$(tailscale version | head -n 1)"
+	;;
+start | restart)
+	sleep 1
+	rm -f "$STATE/stopped"
+	echo "tailscaled started"
+	;;
+stop)
+	sleep 1
+	: >"$STATE/stopped"
+	echo "tailscaled stopped"
+	;;
+cli)
+	if [ "$running" != true ]; then
+		echo "failed to connect to local tailscaled; it doesn't appear to be running" >&2
+		exit 1
+	fi
+	case "$1" in
+	status | version | ip | whois | ping) exec tailscale "$@" ;;
+	debug) [ "${2:-}" = prefs ] && exec tailscale debug prefs ;;
+	switch) [ "${2:-}" = --list ] && exec tailscale "$@" ;;
+	esac
+	if [ "${TSNEXT_DEV_WRITE:-}" = 1 ]; then
+		exec tailscale "$@"
+	fi
+	skip "tailscale $*"
+	;;
+login) skip "tailscale login" ;;
+config)
+	if [ "${1:-}" = set ]; then
+		grep -v "^$2=" "$CONF" >"$CONF.new"
+		echo "$2=$3" >>"$CONF.new"
+		mv "$CONF.new" "$CONF"
+		exit 0
+	fi
+	. "$CONF"
+	printf '{"tunMode":"%s","port":%s,"firewallMode":"%s","verbose":%s}\n' \
+		"$TS_TUN_MODE" "$TS_PORT" "$TS_FIREWALL_MODE" "$TS_VERBOSE"
+	;;
+log)
+	lines=200
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+		-n) lines=$2 && shift ;;
+		*) break ;;
+		esac
+		shift
+	done
+	# A fixed sample, written once, so lines keep their timestamps the way
+	# a real log's do.
+	if [ "${1:-}" = service ]; then
+		file=$STATE/service.log
+		[ -f "$file" ] || printf '%s boot: module v0.0.0-dev\n%s starting tailscaled (tun=tailscale0, port=41641)\n' \
+			"$(date '+%F %T')" "$(date '+%F %T')" >"$file"
+	else
+		file=$STATE/tailscaled.log
+		[ -f "$file" ] || tailscale status 2>&1 | sed "s|^|$(date '+%Y/%m/%d %T') dev: |" >"$file"
+	fi
+	tail -n "$lines" "$file"
+	;;
+*)
+	echo "dev tsctl: unknown command $cmd" >&2
+	exit 2
+	;;
+esac

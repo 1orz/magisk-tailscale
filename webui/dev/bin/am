@@ -1,0 +1,9 @@
+#!/bin/sh
+# Development stand-in for Android's activity manager: opens VIEW intents'
+# URLs in this machine's browser.
+url=""
+while [ "$#" -gt 0 ]; do
+	[ "$1" = -d ] && url=$2
+	shift
+done
+[ -n "$url" ] && open "$url"

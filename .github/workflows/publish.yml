@@ -27,12 +27,12 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: module
           path: dist
@@ -49,7 +49,7 @@ jobs:
           tools/release-meta.sh "$REASON"
           echo "tag=v$TS_VERSION-r$MODULE_REV" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@v4
         with:
           subject-path: dist/*.zip
 

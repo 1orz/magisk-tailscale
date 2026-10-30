@@ -51,10 +51,24 @@ if [ -d "/data/adb/modules/$LEGACY_ID" ]; then
 fi
 
 ui_print "- Setting permissions"
-set_perm_recursive "$MODPATH" 0 0 0755 0644
+# KernelSU and APatch set the WebUI's (webroot/) permissions and SELinux
+# context themselves; set_perm would relabel it as system_file.
+for f in "$MODPATH"/*; do
+	[ "${f##*/}" = webroot ] && continue
+	if [ -d "$f" ]; then
+		set_perm_recursive "$f" 0 0 0755 0644
+	else
+		set_perm "$f" 0 0 0644
+	fi
+done
+set_perm "$MODPATH" 0 0 0755
 set_perm_recursive "$MODPATH/system/bin" 0 0 0755 0755
 set_perm_recursive "$MODPATH/scripts" 0 0 0755 0755
+for f in "$MODPATH"/*.sh; do
+	set_perm "$f" 0 0 0755
+done
 
-ui_print "- Done. Reboot, then log in from a root shell:"
+ui_print "- Done. Reboot, then log in from the module's WebUI"
+ui_print "  (KernelSU / APatch), or from a root shell:"
 ui_print "    su -c tailscale up"
 ui_print "  Manage the service with: su -c tsctl status"

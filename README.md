@@ -28,6 +28,19 @@
 
 ## 使用
 
+### WebUI
+
+在 KernelSU 或 APatch 管理器中打开模块的 WebUI（Magisk 需借助 KsuWebUI、MMRL 等应用），支持中文、英文、日文：
+
+- **概览**：连接开关、本机地址（点击复制）、出口节点、健康检查、版本；未登录时显示登录链接和二维码。
+- **设备**：tailnet 中的设备，本机置顶；点开可查看地址和连接方式，实时 ping 延迟曲线，一键用作出口节点。
+- **设置**：出口节点、作为出口节点 / 子网路由、子网路由与 MagicDNS 开关、主机名、网络模式与端口、多账号（切换、添加、移除）、语言与主题。
+- **日志**：tailscaled 与服务日志，高亮显示，可切换是否换行。
+
+所有数据每秒刷新一次，页面在后台时暂停。
+
+### 命令行
+
 | 命令 | 作用 |
 |---|---|
 | `tailscale ...` | 官方 CLI，已自动指向本模块的 daemon |
@@ -73,10 +86,12 @@
 
 ## 构建
 
-依赖 bash、git、zip；Go 工具链由上游的 `./tool/go` 自动下载。
+依赖 bash、git、zip、Node.js；Go 工具链由上游的 `./tool/go` 自动下载。
 
 ```sh
-make            # fetch + patch + test + build + package → dist/*.zip
+make            # fetch + patch + test + build + webui + package → dist/*.zip
+make webui      # 只构建 WebUI（webui/dist）
+cd webui && npm run dev   # 开发 WebUI：数据来自本机的 tailscale，修改类命令只记录不执行
 make smoke      # 在 arm64 Linux 上（或借助 qemu）冒烟测试
 GO=go make      # 使用本机 go 而不是上游钉死的工具链
 ```

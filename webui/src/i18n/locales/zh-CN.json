@@ -1,0 +1,201 @@
+{
+  "nav": {
+    "overview": "概览",
+    "devices": "设备",
+    "settings": "设置",
+    "logs": "日志"
+  },
+  "state": {
+    "Running": "已连接",
+    "Stopped": "已断开",
+    "Starting": "正在连接",
+    "NeedsLogin": "未登录",
+    "NeedsMachineAuth": "等待批准",
+    "NoState": "正在启动",
+    "serviceStopped": "服务未运行"
+  },
+  "common": {
+    "copy": "复制",
+    "copied": "已复制",
+    "copyFailed": "复制失败",
+    "save": "保存",
+    "cancel": "取消",
+    "failed": "操作失败",
+    "saved": "已保存",
+    "retry": "重试"
+  },
+  "bridge": {
+    "missingTitle": "无法执行命令",
+    "missingDesc": "请在 KernelSU 或 APatch 管理器中打开此页面。"
+  },
+  "service": {
+    "stoppedTitle": "Tailscale 服务未运行",
+    "stoppedDesc": "启动服务后才能连接到 tailnet。",
+    "start": "启动服务",
+    "started": "服务已启动",
+    "loadFailed": "无法读取服务状态"
+  },
+  "overview": {
+    "connect": "连接到 tailnet",
+    "connectDesc": "断开后服务仍在运行，可随时重新连接。",
+    "addresses": "本机地址",
+    "ipv4": "IPv4",
+    "ipv6": "IPv6",
+    "magicDNS": "MagicDNS 名称",
+    "exitNode": "出口节点",
+    "exitNodeNone": "未使用",
+    "exitNodeChange": "更改",
+    "health": "健康检查",
+    "version": "版本",
+    "moduleVersion": "模块",
+    "tailscaleVersion": "Tailscale",
+    "mode": "网络模式",
+    "modeTun": "内核 TUN（{{dev}}）",
+    "modeUserspace": "用户态网络"
+  },
+  "login": {
+    "title": "登录 Tailscale",
+    "desc": "这台设备还没有登录。登录后即可加入你的 tailnet。",
+    "button": "登录",
+    "waiting": "正在获取登录链接…",
+    "drawerTitle": "完成登录",
+    "drawerDesc": "在浏览器中打开链接，或用另一台设备扫描二维码。",
+    "openBrowser": "在浏览器中打开",
+    "copyLink": "复制链接",
+    "success": "登录成功"
+  },
+  "machineAuth": {
+    "title": "等待管理员批准",
+    "desc": "这台设备已登录，在管理后台批准后才能连接。",
+    "open": "打开管理后台"
+  },
+  "devices": {
+    "search": "搜索名称或 IP",
+    "empty": "没有其他设备",
+    "emptyDesc": "tailnet 中还没有其他设备。",
+    "noMatch": "没有匹配的设备",
+    "noMatchDesc": "换个关键词试试。",
+    "online": "在线",
+    "offline": "离线",
+    "lastSeen": "{{time}}在线",
+    "exitNode": "出口节点",
+    "inUse": "使用中",
+    "count": "{{online}} 台在线，共 {{total}} 台",
+    "self": "本机"
+  },
+  "peer": {
+    "magicDNS": "MagicDNS 名称",
+    "os": "系统",
+    "user": "所有者",
+    "connection": "连接方式",
+    "direct": "直连",
+    "relay": "中继（{{region}}）",
+    "idle": "空闲",
+    "traffic": "流量",
+    "trafficValue": "接收 {{rx}} · 发送 {{tx}}",
+    "routes": "子网路由",
+    "tags": "标签",
+    "keyExpiry": "密钥到期",
+    "expired": "已过期",
+    "useExitNode": "用作出口节点",
+    "stopExitNode": "停止使用此出口节点",
+    "exitNodeOn": "已切换出口节点",
+    "exitNodeOff": "已停止使用出口节点"
+  },
+  "settings": {
+    "exitNode": {
+      "title": "出口节点",
+      "desc": "让本机的互联网流量经由其他设备转发。",
+      "select": "使用的出口节点",
+      "none": "不使用",
+      "offline": "离线",
+      "allowLan": "允许访问本地网络",
+      "allowLanDesc": "使用出口节点时，仍可直接访问局域网设备。"
+    },
+    "advertise": {
+      "title": "共享本机网络",
+      "exitNode": "作为出口节点",
+      "exitNodeDesc": "允许其他设备经由本机访问互联网。需在管理后台批准。",
+      "routes": "子网路由",
+      "routesDesc": "用逗号分隔，例如 192.168.1.0/24。需在管理后台批准。",
+      "routesInvalid": "请输入 CIDR 格式的网段，例如 192.168.1.0/24"
+    },
+    "network": {
+      "title": "网络",
+      "acceptRoutes": "使用子网路由",
+      "acceptRoutesDesc": "访问其他设备共享的子网。",
+      "acceptDNS": "使用 MagicDNS",
+      "acceptDNSDesc": "用 Tailscale 的 DNS 解析设备名。",
+      "shieldsUp": "阻止入站连接",
+      "shieldsUpDesc": "其他设备无法主动连接本机。"
+    },
+    "device": {
+      "title": "设备名",
+      "hostname": "主机名",
+      "hostnameDesc": "留空则使用设备型号。"
+    },
+    "service": {
+      "title": "服务",
+      "mode": "网络模式",
+      "modeAuto": "自动",
+      "modeTun": "TUN",
+      "modeUserspace": "用户态",
+      "modeDesc": "自动：有 /dev/net/tun 时使用内核 TUN，否则使用用户态网络。",
+      "port": "UDP 端口",
+      "portDesc": "0 表示随机端口。",
+      "portInvalid": "端口须在 0–65535 之间",
+      "restartNeeded": "修改将在重启服务后生效。",
+      "restart": "重启服务",
+      "stop": "停止服务",
+      "restarted": "服务已重启",
+      "stopped": "服务已停止",
+      "stopConfirmTitle": "停止服务？",
+      "stopConfirmDesc": "停止后本机会断开 tailnet，经由 tailnet 的连接（例如 adb）也会中断。"
+    },
+    "ui": {
+      "title": "界面",
+      "language": "语言",
+      "system": "跟随系统",
+      "theme": "主题",
+      "light": "浅色",
+      "dark": "深色"
+    },
+    "account": {
+      "title": "账号",
+      "logout": "退出登录",
+      "logoutConfirmTitle": "退出登录？",
+      "logoutConfirmDesc": "本机会从 tailnet 中移除，之后需要重新登录。",
+      "loggedOut": "已退出登录",
+      "current": "当前",
+      "switch": "切换",
+      "switched": "已切换账号",
+      "remove": "移除",
+      "removed": "已移除账号",
+      "removeConfirmTitle": "移除此账号？",
+      "removeConfirmDesc": "本机将不再保存 {{account}} 的登录状态，之后需要重新登录才能切换回来。",
+      "add": "添加账号"
+    },
+    "about": {
+      "title": "关于",
+      "project": "项目主页",
+      "admin": "Tailscale 管理后台"
+    }
+  },
+  "logs": {
+    "tailscaled": "tailscaled",
+    "service": "服务",
+    "empty": "暂无日志",
+    "copyAll": "复制全部",
+    "wrap": "换行"
+  },
+  "ping": {
+    "title": "延迟",
+    "pause": "暂停",
+    "resume": "继续",
+    "latest": "当前",
+    "avg": "平均",
+    "min": "最低",
+    "loss": "丢包",
+    "timeout": "超时"
+  }
+}

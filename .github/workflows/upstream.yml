@@ -30,7 +30,7 @@ jobs:
       ts_commit: ${{ steps.check.outputs.ts_commit }}
       module_rev: ${{ steps.check.outputs.module_rev }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - id: check
