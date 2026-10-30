@@ -1,0 +1,367 @@
+#!/system/bin/sh
+# tsctl - manage the Tailscale Next daemon.
+#
+# Usage: tsctl <command>
+#   start              start tailscaled under the supervisor
+#   stop               stop tailscaled (it removes its routes and rules)
+#   restart            stop, then start (re-reads settings.conf)
+#   status [--json]    daemon status, followed by `tailscale status`
+#   is-running         exit 0 when the daemon is running
+#   log [-f] [service] show the tailscaled log, or the service log
+#   version            module and tailscale versions
+#
+# Internal commands, used by the module scripts:
+#   boot               start at boot (service.sh)
+#   supervise          run tailscaled in the foreground, restarting it
+#   module-event E F   react to the manager toggling the module
+
+MODULE_ID=magisk-tailscale-next
+MODDIR=/data/adb/modules/$MODULE_ID
+# Run from inside a module directory (e.g. modules_update before the first
+# reboot), use that one. Via the mounted /system/bin/tsctl the module's
+# location can't be recovered from $0, so the default above applies.
+case "$0" in
+*/system/bin/tsctl)
+	_dir=${0%/system/bin/tsctl}
+	[ -n "$_dir" ] && [ -f "$_dir/module.prop" ] && MODDIR=$_dir
+	;;
+esac
+
+DATA_DIR=/data/adb/tailscale-next
+RUN_DIR=$DATA_DIR/run
+LOG_DIR=$DATA_DIR/logs
+STATE_DIR=$DATA_DIR/state
+CONFIG=$DATA_DIR/config/settings.conf
+
+TAILSCALED=$MODDIR/system/bin/tailscaled
+SOCKET=$RUN_DIR/tailscaled.sock
+SUPERVISOR_PID=$RUN_DIR/supervisor.pid
+DAEMON_PID=$RUN_DIR/tailscaled.pid
+DAEMON_LOG=$LOG_DIR/tailscaled.log
+SERVICE_LOG=$LOG_DIR/service.log
+LOG_MAX_BYTES=4194304
+
+export PATH="$MODDIR/system/bin:/system/bin:/system/xbin:/vendor/bin:$PATH"
+
+log() {
+	echo "$(date '+%F %T') $*" >>"$SERVICE_LOG" 2>/dev/null
+	[ -t 1 ] && echo "$*"
+	return 0
+}
+
+ensure_dirs() {
+	mkdir -p "$RUN_DIR" "$LOG_DIR" "$STATE_DIR" "$DATA_DIR/config"
+	chmod 0700 "$DATA_DIR"
+}
+
+load_config() {
+	TS_TUN_MODE=auto
+	TS_PORT=41641
+	TS_FIREWALL_MODE=iptables
+	TS_VERBOSE=0
+	TS_EXTRA_ARGS=
+	# shellcheck source=../../defaults/settings.conf
+	[ -f "$CONFIG" ] && . "$CONFIG"
+}
+
+module_version() {
+	sed -n 's/^version=//p' "$MODDIR/module.prop" 2>/dev/null
+}
+
+tailscale_version() {
+	sed -n 's/^tailscale=//p' "$MODDIR/buildinfo.txt" 2>/dev/null
+}
+
+# ts runs the tailscale CLI against this module's daemon.
+ts() {
+	TS_BE_CLI=1 "$TAILSCALED" --socket="$SOCKET" "$@"
+}
+
+# proc_alive PID reports whether PID exists and is not a zombie.
+proc_alive() {
+	[ -r "/proc/$1/stat" ] || return 1
+	_state=$(cut -d')' -f2 <"/proc/$1/stat" | cut -d' ' -f2)
+	[ "$_state" != Z ]
+}
+
+# pid_alive PIDFILE PATTERN reports whether the pid in PIDFILE is alive
+# and its command line contains PATTERN, so a recycled pid isn't mistaken
+# for ours.
+pid_alive() {
+	_pid=$(cat "$1" 2>/dev/null) || return 1
+	[ -n "$_pid" ] && proc_alive "$_pid" || return 1
+	tr '\0' ' ' <"/proc/$_pid/cmdline" 2>/dev/null | grep -q -- "$2"
+}
+
+supervisor_running() {
+	pid_alive "$SUPERVISOR_PID" "tsctl supervise"
+}
+
+# find_pids PATTERN prints the pids whose command line contains PATTERN.
+find_pids() {
+	for _p in /proc/[0-9]*; do
+		tr '\0' ' ' <"$_p/cmdline" 2>/dev/null | grep -q -- "$1" && echo "${_p#/proc/}"
+	done
+}
+
+find_busybox() {
+	for _bb in /data/adb/ksu/bin/busybox /data/adb/ap/bin/busybox /data/adb/magisk/busybox; do
+		[ -x "$_bb" ] && echo "$_bb" && return 0
+	done
+	return 1
+}
+
+tun_arg() {
+	case "$TS_TUN_MODE" in
+	tun) echo tailscale0 ;;
+	auto) if [ -c /dev/net/tun ]; then echo tailscale0; else echo userspace-networking; fi ;;
+	*) echo userspace-networking ;;
+	esac
+}
+
+set_description() {
+	[ -w "$MODDIR/module.prop" ] || return 0
+	_v=$(tailscale_version)
+	sed -i "s|^description=.*|description=$1 Root-level Tailscale (tailscaled ${_v%%-*}) for Magisk, KernelSU and APatch.|" \
+		"$MODDIR/module.prop"
+}
+
+# rotate_big FILE copies FILE to FILE.1 and truncates it once it grows past
+# LOG_MAX_BYTES. Truncating in place works because writers use O_APPEND.
+rotate_big() {
+	_size=$(wc -c <"$1" 2>/dev/null || echo 0)
+	if [ "$_size" -gt "$LOG_MAX_BYTES" ]; then
+		cp "$1" "$1.1" && : >"$1"
+	fi
+}
+
+cmd_supervise() {
+	ensure_dirs
+	echo $$ >"$SUPERVISOR_PID"
+	stopping=""
+	trap 'stopping=1' TERM INT
+	trap '' HUP
+
+	(while sleep 300; do
+		rotate_big "$DAEMON_LOG"
+		rotate_big "$SERVICE_LOG"
+	done) &
+	rotator=$!
+
+	backoff=1
+	while [ -z "$stopping" ]; do
+		load_config
+		tun=$(tun_arg)
+		[ -s "$DAEMON_LOG" ] && mv -f "$DAEMON_LOG" "$DAEMON_LOG.1"
+		rm -f "$SOCKET"
+
+		log "starting tailscaled $(tailscale_version) (tun=$tun, port=$TS_PORT)"
+		# shellcheck disable=SC2086 # TS_EXTRA_ARGS is a list of flags.
+		HOME=$DATA_DIR TS_LOGS_DIR=$LOG_DIR TS_DEBUG_FIREWALL_MODE=$TS_FIREWALL_MODE \
+			"$TAILSCALED" --statedir="$STATE_DIR" --socket="$SOCKET" --port="$TS_PORT" \
+			--tun="$tun" --verbose="$TS_VERBOSE" --no-logs-no-support $TS_EXTRA_ARGS \
+			</dev/null >>"$DAEMON_LOG" 2>&1 &
+		child=$!
+		echo "$child" >"$DAEMON_PID"
+		started=$(date +%s)
+		set_description "🟢 Running ($tun)."
+
+		# A trapped TERM interrupts wait; the loop then stops the daemon.
+		wait "$child"
+		rc=$?
+		if [ -n "$stopping" ]; then
+			log "stopping tailscaled (pid $child)"
+			kill -TERM "$child" 2>/dev/null
+			_i=0
+			while [ "$_i" -lt 15 ] && proc_alive "$child"; do
+				sleep 1
+				_i=$((_i + 1))
+			done
+			if proc_alive "$child"; then
+				log "tailscaled did not exit in 15s; killing it"
+				kill -KILL "$child" 2>/dev/null
+				wait "$child" 2>/dev/null
+				# A killed daemon leaves its routes, rules and DNS
+				# redirect behind; without it the redirect breaks DNS.
+				HOME=$DATA_DIR "$TAILSCALED" --cleanup --statedir="$STATE_DIR" \
+					--socket="$SOCKET" >>"$DAEMON_LOG" 2>&1
+			fi
+			wait "$child" 2>/dev/null
+			break
+		fi
+
+		ran=$(($(date +%s) - started))
+		[ "$ran" -ge 60 ] && backoff=1
+		log "tailscaled exited with status $rc after ${ran}s; restarting in ${backoff}s"
+		set_description "⚠️ tailscaled exited (status $rc), restarting."
+		sleep "$backoff" &
+		wait $!
+		backoff=$((backoff * 2))
+		[ "$backoff" -gt 60 ] && backoff=60
+	done
+
+	kill "$rotator" 2>/dev/null
+	rm -f "$SUPERVISOR_PID" "$DAEMON_PID" "$SOCKET"
+	log "stopped"
+	set_description "⏹ Stopped."
+}
+
+cmd_start() {
+	ensure_dirs
+	if supervisor_running; then
+		echo "tailscaled is already running"
+		return 0
+	fi
+	[ -x "$TAILSCALED" ] || {
+		echo "tailscaled not found at $TAILSCALED" >&2
+		return 1
+	}
+	rm -f "$SOCKET"
+	if command -v setsid >/dev/null 2>&1; then
+		setsid "$MODDIR/system/bin/tsctl" supervise </dev/null >/dev/null 2>&1 &
+	else
+		nohup "$MODDIR/system/bin/tsctl" supervise </dev/null >/dev/null 2>&1 &
+	fi
+	_i=0
+	while [ "$_i" -lt 15 ]; do
+		if [ -S "$SOCKET" ]; then
+			echo "tailscaled started"
+			return 0
+		fi
+		sleep 1
+		_i=$((_i + 1))
+	done
+	echo "tailscaled did not come up; see: tsctl log" >&2
+	return 1
+}
+
+cmd_stop() {
+	if ! supervisor_running; then
+		# A daemon left behind without its supervisor.
+		if pid_alive "$DAEMON_PID" tailscaled; then
+			kill -TERM "$(cat "$DAEMON_PID")"
+			rm -f "$DAEMON_PID"
+			echo "stopped orphaned tailscaled"
+		else
+			echo "tailscaled is not running"
+		fi
+		return 0
+	fi
+	_pid=$(cat "$SUPERVISOR_PID")
+	kill -TERM "$_pid"
+	_i=0
+	while [ "$_i" -lt 20 ] && proc_alive "$_pid"; do
+		sleep 1
+		_i=$((_i + 1))
+	done
+	if proc_alive "$_pid"; then
+		echo "supervisor did not exit" >&2
+		return 1
+	fi
+	echo "tailscaled stopped"
+}
+
+cmd_status() {
+	load_config
+	running=false
+	pid=""
+	if supervisor_running && pid_alive "$DAEMON_PID" tailscaled; then
+		running=true
+		pid=$(cat "$DAEMON_PID")
+	fi
+	if [ "${1:-}" = --json ]; then
+		printf '{"running":%s,"pid":%s,"tunMode":"%s","tun":"%s","moduleVersion":"%s","tailscaleVersion":"%s","socket":"%s"}\n' \
+			"$running" "${pid:-null}" "$TS_TUN_MODE" "$(tun_arg)" "$(module_version)" "$(tailscale_version)" "$SOCKET"
+		return 0
+	fi
+	if [ "$running" = true ]; then
+		echo "tailscaled: running (pid $pid, tun=$(tun_arg))"
+		echo
+		ts status
+	else
+		echo "tailscaled: stopped"
+	fi
+}
+
+cmd_log() {
+	_follow=""
+	if [ "${1:-}" = -f ]; then
+		_follow=1
+		shift
+	fi
+	_file=$DAEMON_LOG
+	[ "${1:-}" = service ] && _file=$SERVICE_LOG
+	if [ -n "$_follow" ]; then
+		tail -n 100 -f "$_file"
+	else
+		tail -n 200 "$_file"
+	fi
+}
+
+start_watcher() {
+	_handler=$MODDIR/scripts/module-event.sh
+	for _p in $(find_pids "inotifyd $_handler"); do
+		kill "$_p" 2>/dev/null
+	done
+	if ! _bb=$(find_busybox) || ! "$_bb" --list | grep -qx inotifyd; then
+		log "busybox inotifyd not found; module enable/disable applies after reboot"
+		return 0
+	fi
+	"$_bb" inotifyd "$_handler" "$MODDIR:nd" </dev/null >/dev/null 2>&1 &
+}
+
+cmd_boot() {
+	ensure_dirs
+	log "boot: module $(module_version) at $MODDIR"
+	start_watcher
+	if [ -f "$MODDIR/disable" ]; then
+		log "module is disabled; not starting"
+		set_description "⏹ Disabled."
+		return 0
+	fi
+	cmd_start
+}
+
+# cmd_module_event EVENT FILE handles inotifyd events for the module
+# directory: the manager creates "disable"/"remove" to turn it off.
+cmd_module_event() {
+	case "$1:$2" in
+	n:disable | n:remove)
+		log "module $2 flag set; stopping"
+		cmd_stop >/dev/null
+		;;
+	d:disable | d:remove)
+		if [ ! -f "$MODDIR/disable" ] && [ ! -f "$MODDIR/remove" ]; then
+			log "module re-enabled; starting"
+			cmd_start >/dev/null
+		fi
+		;;
+	esac
+}
+
+usage() {
+	sed -n '2,13s/^# \{0,1\}//p' "$0"
+}
+
+cmd=${1:-}
+[ "$#" -gt 0 ] && shift
+case "$cmd" in
+start) cmd_start ;;
+stop) cmd_stop ;;
+restart) cmd_stop && cmd_start ;;
+status) cmd_status "$@" ;;
+is-running) supervisor_running ;;
+log) cmd_log "$@" ;;
+version)
+	echo "module:    $(module_version)"
+	echo "tailscale: $(tailscale_version)"
+	;;
+boot) cmd_boot ;;
+supervise) cmd_supervise ;;
+module-event) cmd_module_event "$@" ;;
+help | -h | --help) usage ;;
+*)
+	usage >&2
+	exit 2
+	;;
+esac

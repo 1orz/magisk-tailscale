@@ -1,0 +1,113 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: 1orz <noreply@github.com>
+Subject: [PATCH] hostinfo: name Android devices after their model
+
+---
+ hostinfo/hostinfo_linux_androidroot.go      | 66 +++++++++++++++++++++
+ hostinfo/hostinfo_linux_androidroot_test.go | 24 ++++++++
+ 2 files changed, 90 insertions(+)
+ create mode 100644 hostinfo/hostinfo_linux_androidroot.go
+ create mode 100644 hostinfo/hostinfo_linux_androidroot_test.go
+
+diff --git a/hostinfo/hostinfo_linux_androidroot.go b/hostinfo/hostinfo_linux_androidroot.go
+new file mode 100644
+index 0000000..83ce54b
+--- /dev/null
++++ b/hostinfo/hostinfo_linux_androidroot.go
+@@ -0,0 +1,66 @@
++// Copyright (c) Tailscale Inc & contributors
++// SPDX-License-Identifier: BSD-3-Clause
++
++//go:build linux && !android
++
++package hostinfo
++
++import (
++	"context"
++	"os"
++	"os/exec"
++	"strings"
++	"sync"
++	"time"
++
++	"tailscale.com/version/distro"
++)
++
++// magisk-tailscale-next: Android's kernel hostname is "localhost", so every
++// rooted phone would join the tailnet as localhost, localhost-1, ... Name
++// it after the device, like the official app does, unless the hostname was
++// set to something else.
++
++// This file sorts after hostinfo_linux.go, so this init runs after the one
++// there and its deviceModel wins.
++func init() {
++	if distro.Get() != distro.Android {
++		return
++	}
++	SetHostnameFn(androidHostname)
++	deviceModel = androidDeviceModel
++}
++
++func androidHostname() (string, error) {
++	h, err := os.Hostname()
++	if err == nil && h != "" && h != "localhost" && h != "localhost.localdomain" {
++		return h, nil
++	}
++	if name := androidDeviceModel(); name != "" {
++		return name, nil
++	}
++	return h, err
++}
++
++// androidDeviceModel returns e.g. "OnePlus PLQ110" or "Google Pixel 8".
++var androidDeviceModel = sync.OnceValue(func() string {
++	return androidModelName(getprop("ro.product.manufacturer"), getprop("ro.product.model"))
++})
++
++func androidModelName(manufacturer, model string) string {
++	switch {
++	case model == "":
++		return manufacturer
++	case manufacturer == "",
++		strings.HasPrefix(strings.ToLower(model), strings.ToLower(manufacturer)):
++		return model
++	}
++	return manufacturer + " " + model
++}
++
++func getprop(name string) string {
++	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
++	defer cancel()
++	out, _ := exec.CommandContext(ctx, "getprop", name).Output()
++	return strings.TrimSpace(string(out))
++}
+diff --git a/hostinfo/hostinfo_linux_androidroot_test.go b/hostinfo/hostinfo_linux_androidroot_test.go
+new file mode 100644
+index 0000000..f54bbcf
+--- /dev/null
++++ b/hostinfo/hostinfo_linux_androidroot_test.go
+@@ -0,0 +1,24 @@
++// Copyright (c) Tailscale Inc & contributors
++// SPDX-License-Identifier: BSD-3-Clause
++
++//go:build linux && !android
++
++package hostinfo
++
++import "testing"
++
++func TestAndroidModelName(t *testing.T) {
++	for _, tt := range []struct{ manufacturer, model, want string }{
++		{"OnePlus", "PLQ110", "OnePlus PLQ110"},
++		{"Google", "Pixel 8", "Google Pixel 8"},
++		{"samsung", "SM-S9180", "samsung SM-S9180"},
++		{"Xiaomi", "Xiaomi 14", "Xiaomi 14"},
++		{"OnePlus", "", "OnePlus"},
++		{"", "PLQ110", "PLQ110"},
++		{"", "", ""},
++	} {
++		if got := androidModelName(tt.manufacturer, tt.model); got != tt.want {
++			t.Errorf("androidModelName(%q, %q) = %q, want %q", tt.manufacturer, tt.model, got, tt.want)
++		}
++	}
++}

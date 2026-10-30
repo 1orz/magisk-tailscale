@@ -1,0 +1,100 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: 1orz <noreply@github.com>
+Subject: [PATCH] wgengine/router/osrouter: policy rules that coexist with netd
+ on Android
+
+---
+ wgengine/router/osrouter/router_linux.go      | 37 ++++++++++++++++++-
+ wgengine/router/osrouter/router_linux_test.go | 21 +++++++++++
+ 2 files changed, 56 insertions(+), 2 deletions(-)
+
+diff --git a/wgengine/router/osrouter/router_linux.go b/wgengine/router/osrouter/router_linux.go
+index c8b31d0..f7184d9 100644
+--- a/wgengine/router/osrouter/router_linux.go
++++ b/wgengine/router/osrouter/router_linux.go
+@@ -189,6 +189,18 @@ func newUserspaceRouterAdvanced(logf logger.Logf, tunname string, netMon *netmon
+ 		r.logf("mwan3 on openWRT detected, switching policy base priority to 1300")
+ 	}
+ 
++	// On Android, netd owns policy routing (rules 10000-32000) and the
++	// kernel's main table holds no default route, so upstream's rules at
++	// 52xx would send tailscaled's own bypass-marked traffic to
++	// "unreachable", and capture all other traffic before netd sees it.
++	// Instead install the single rule from androidIPRules just after
++	// netd's legacy_system rule (10000) and before its per-app VPN and
++	// network rules (11000+).
++	if getDistroFunc() == distro.Android {
++		r.ipPolicyPrefBase = 10500
++		r.logf("Android detected, switching policy base priority to 10500")
++	}
++
+ 	r.fixupWSLMTU()
+ 
+ 	return r, nil
+@@ -1646,11 +1658,32 @@ func mustRouteTable(num int) RouteTable {
+ 	},
+ }
+ 
++// androidIPRules are the policy routing rules that Tailscale uses on Android.
++//
++// The priority is the value represented here added to r.ipPolicyPrefBase,
++// which is 10500 on Android.
++//
++// Every packet not originated by tailscaled looks up the Tailscale table,
++// so tailnet routes (and the default route, when an exit node is in use)
++// win over other VPN apps. Anything that misses, and all of tailscaled's
++// own traffic, falls through to netd's rules unchanged.
++var androidIPRules = []netlink.Rule{
++	{
++		Priority: 70,
++		Invert:   true,
++		Mark:     tsconst.LinuxBypassMarkNum,
++		Table:    tailscaleRouteTable.Num,
++	},
++}
++
+ // ipRules returns the appropriate list of ip rules to be used by Tailscale. See
+-// comments on baseIPRules and ubntIPRules for more details.
++// comments on baseIPRules, ubntIPRules and androidIPRules for more details.
+ func ipRules() []netlink.Rule {
+-	if getDistroFunc() == distro.UBNT {
++	switch getDistroFunc() {
++	case distro.UBNT:
+ 		return ubntIPRules
++	case distro.Android:
++		return androidIPRules
+ 	}
+ 	return baseIPRules
+ }
+diff --git a/wgengine/router/osrouter/router_linux_test.go b/wgengine/router/osrouter/router_linux_test.go
+index efa2bd3..6c65fa9 100644
+--- a/wgengine/router/osrouter/router_linux_test.go
++++ b/wgengine/router/osrouter/router_linux_test.go
+@@ -1559,6 +1559,27 @@ func TestIPRulesForUBNT(t *testing.T) {
+ 	}
+ }
+ 
++func TestIPRulesForAndroid(t *testing.T) {
++	getDistroFunc = func() distro.Distro {
++		return distro.Android
++	}
++	defer func() { getDistroFunc = distro.Get }()
++
++	actual := ipRules()
++	if len(actual) != 1 {
++		t.Fatalf("got %d rules, want 1", len(actual))
++	}
++	ru := actual[0]
++	if !ru.Invert || ru.Mark != tsconst.LinuxBypassMarkNum || ru.Table != tailscaleRouteTable.Num {
++		t.Errorf("got %+v, want: not fwmark bypass, lookup table %d", ru, tailscaleRouteTable.Num)
++	}
++	// netd's legacy_system rule is at 10000 and its first per-app rules
++	// at 11000; Tailscale's rule must land in between.
++	if pref := 10500 + ru.Priority; pref <= 10000 || pref >= 11000 {
++		t.Errorf("rule priority %d is not between netd's 10000 and 11000", pref)
++	}
++}
++
+ func TestUpdateMagicsockPortChange(t *testing.T) {
+ 	nfr := &fakeIPTablesRunner{
+ 		t:    t,

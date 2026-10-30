@@ -1,0 +1,5 @@
+# Upstream Tailscale release this module is built from.
+# Rewritten by CI (tools/write-lock.sh); edit by hand only to pin a version.
+TS_VERSION=1.104.4
+TS_COMMIT=27047635f237d1f3e0b08c0f487674757f30d2f7
+MODULE_REV=1

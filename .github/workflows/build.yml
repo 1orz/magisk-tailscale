@@ -1,0 +1,99 @@
+# Reusable: fetch upstream, patch, test, build, smoke-test and package the
+# module. Uploads the zip as the "module" artifact.
+name: build
+
+on:
+  workflow_call:
+    inputs:
+      ts_version:
+        description: Upstream version to build instead of upstream.lock's
+        type: string
+        default: ""
+      ts_commit:
+        type: string
+        default: ""
+      module_rev:
+        type: string
+        default: ""
+    outputs:
+      version:
+        value: ${{ jobs.build.outputs.version }}
+      zip:
+        value: ${{ jobs.build.outputs.zip }}
+      failed_patch:
+        value: ${{ jobs.build.outputs.failed_patch }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.package.outputs.version }}
+      zip: ${{ steps.package.outputs.zip }}
+      failed_patch: ${{ steps.failed.outputs.patch }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use requested upstream version
+        if: inputs.ts_version != ''
+        env:
+          TS_VERSION: ${{ inputs.ts_version }}
+          TS_COMMIT: ${{ inputs.ts_commit }}
+          MODULE_REV: ${{ inputs.module_rev }}
+        run: tools/write-lock.sh "$TS_VERSION" "$TS_COMMIT" "$MODULE_REV"
+
+      - name: Lint shell scripts
+        # A pinned release, not the runner's, so local and CI results agree.
+        run: |
+          docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:v0.11.0 \
+            -x module/*.sh module/scripts/*.sh module/system/bin/tsctl tools/*.sh
+
+      - name: Fetch upstream
+        run: tools/fetch-upstream.sh
+
+      - name: Apply patches
+        run: tools/apply-patches.sh
+
+      - name: Report failed patch
+        id: failed
+        if: failure()
+        run: |
+          if [ -f build/failed-patch ]; then
+            echo "patch=$(cat build/failed-patch)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Cache Go toolchain and modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/tsgo
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-${{ runner.os }}-${{ hashFiles('build/src/go.toolchain.rev', 'build/src/go.sum') }}
+          restore-keys: go-${{ runner.os }}-
+
+      - name: Test patched packages
+        run: tools/test-go.sh
+
+      - name: Build tailscaled
+        run: tools/build-go.sh
+
+      - name: Install qemu
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q qemu-user-static
+
+      - name: Smoke test
+        run: tools/smoke.sh
+
+      - name: Package
+        id: package
+        run: tools/package.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: module
+          path: dist/
+          if-no-files-found: error

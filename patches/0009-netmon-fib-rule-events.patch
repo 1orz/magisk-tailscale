@@ -1,0 +1,189 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: 1orz <noreply@github.com>
+Subject: [PATCH] net/netmon: parse FIB rule deletions and watch IPv6 rules
+
+---
+ net/netmon/netmon_linux.go               | 55 ++++++++++++++------
+ net/netmon/netmon_rules_linux_test.go    | 64 ++++++++++++++++++++++++
+ wgengine/router/osrouter/router_linux.go |  2 +-
+ 3 files changed, 106 insertions(+), 15 deletions(-)
+ create mode 100644 net/netmon/netmon_rules_linux_test.go
+
+diff --git a/net/netmon/netmon_linux.go b/net/netmon/netmon_linux.go
+index b7d87f9..b31b001 100644
+--- a/net/netmon/netmon_linux.go
++++ b/net/netmon/netmon_linux.go
+@@ -6,6 +6,7 @@
+ package netmon
+ 
+ import (
++	"fmt"
+ 	"net"
+ 	"net/netip"
+ 	"time"
+@@ -32,7 +33,7 @@ func (unspecifiedMessage) ignore() bool { return false }
+ // was deleted.
+ type RuleDeleted struct {
+ 	// Table is the table number that the deleted rule referenced.
+-	Table uint8
++	Table uint32
+ 	// Priority is the lookup priority of the deleted rule.
+ 	Priority uint32
+ }
+@@ -56,15 +57,49 @@ type nlConn struct {
+ 	addrCache map[uint32]map[netip.Addr]bool
+ }
+ 
++// magisk-tailscale-next: rule events are fib_rule_hdr messages with FRA_*
++// attributes, not routes. Android's netd deletes rules carrying an 8-byte
++// FRA_UID_RANGE, attribute 20, which the route parser takes for the 1-byte
++// RTA_PREF and rejects; its per-network tables also exceed the header's
++// one-byte table field. IPv6 rule events need their own group, which
++// x/sys/unix has no RTMGRP_* constant for.
++const netlinkGroups = unix.RTMGRP_IPV4_IFADDR | unix.RTMGRP_IPV6_IFADDR |
++	unix.RTMGRP_IPV4_ROUTE | unix.RTMGRP_IPV6_ROUTE |
++	unix.RTMGRP_IPV4_RULE | 1<<(unix.RTNLGRP_IPV6_RULE-1)
++
++// parseDeletedRule decodes the table and priority of an RTM_DELRULE
++// message, ignoring the other attributes.
++func parseDeletedRule(data []byte) (RuleDeleted, error) {
++	const fibRuleHdrLen = 12
++	if len(data) < fibRuleHdrLen {
++		return RuleDeleted{}, fmt.Errorf("short fib_rule_hdr: %d bytes", len(data))
++	}
++	rd := RuleDeleted{Table: uint32(data[4])}
++	ad, err := netlink.NewAttributeDecoder(data[fibRuleHdrLen:])
++	if err != nil {
++		return RuleDeleted{}, err
++	}
++	for ad.Next() {
++		switch ad.Type() {
++		case unix.FRA_PRIORITY:
++			rd.Priority = ad.Uint32()
++		case unix.FRA_TABLE:
++			rd.Table = ad.Uint32()
++		}
++	}
++	if err := ad.Err(); err != nil {
++		return RuleDeleted{}, err
++	}
++	return rd, nil
++}
++
+ func newOSMon(bus *eventbus.Bus, logf logger.Logf, m *Monitor) (osMon, error) {
+ 	conn, err := netlink.Dial(unix.NETLINK_ROUTE, &netlink.Config{
+ 		// Routes get us most of the events of interest, but we need
+ 		// address as well to cover things like DHCP deciding to give
+ 		// us a new address upon renewal - routing wouldn't change,
+ 		// but all reachability would.
+-		Groups: unix.RTMGRP_IPV4_IFADDR | unix.RTMGRP_IPV6_IFADDR |
+-			unix.RTMGRP_IPV4_ROUTE | unix.RTMGRP_IPV6_ROUTE |
+-			unix.RTMGRP_IPV4_RULE, // no IPV6_RULE in x/sys/unix
++		Groups: netlinkGroups,
+ 	})
+ 	if err != nil {
+ 		// Google Cloud Run does not implement NETLINK_ROUTE RTMGRP support
+@@ -230,18 +265,10 @@ func (c *nlConn) Receive() (message, error) {
+ 	case unix.RTM_DELRULE:
+ 		// For https://github.com/tailscale/tailscale/issues/1591 where
+ 		// systemd-networkd deletes our rules.
+-		var rmsg rtnetlink.RouteMessage
+-		err := rmsg.UnmarshalBinary(msg.Data)
++		rd, err := parseDeletedRule(msg.Data)
+ 		if err != nil {
+ 			c.logf("ip rule deleted; failed to parse netlink message: %v", err)
+-		} else {
+-			c.logf("ip rule deleted: %+v", rmsg)
+-			// On `ip -4 rule del pref 5210 table main`, logs:
+-			// monitor: ip rule deleted: {Family:2 DstLength:0 SrcLength:0 Tos:0 Table:254 Protocol:0 Scope:0 Type:1 Flags:0 Attributes:{Dst:<nil> Src:<nil> Gateway:<nil> OutIface:0 Priority:5210 Table:254 Mark:4294967295 Expires:<nil> Metrics:<nil> Multipath:[]}}
+-		}
+-		rd := RuleDeleted{
+-			Table:    rmsg.Table,
+-			Priority: rmsg.Attributes.Priority,
++			return ignoreMessage{}, nil
+ 		}
+ 		c.rulesDeleted.Publish(rd)
+ 		if debugNetlinkMessages() {
+diff --git a/net/netmon/netmon_rules_linux_test.go b/net/netmon/netmon_rules_linux_test.go
+new file mode 100644
+index 0000000..fe2a5ea
+--- /dev/null
++++ b/net/netmon/netmon_rules_linux_test.go
+@@ -0,0 +1,64 @@
++// Copyright (c) Tailscale Inc & contributors
++// SPDX-License-Identifier: BSD-3-Clause
++
++//go:build linux && !android
++
++package netmon
++
++import (
++	"encoding/binary"
++	"testing"
++
++	"github.com/mdlayher/netlink"
++	"golang.org/x/sys/unix"
++)
++
++func ruleMsg(t *testing.T, family, hdrTable uint8, attrs ...netlink.Attribute) []byte {
++	t.Helper()
++	hdr := make([]byte, 12) // struct fib_rule_hdr
++	hdr[0], hdr[4] = family, hdrTable
++	b, err := netlink.MarshalAttributes(attrs)
++	if err != nil {
++		t.Fatal(err)
++	}
++	return append(hdr, b...)
++}
++
++func u32(v uint32) []byte {
++	return binary.NativeEndian.AppendUint32(nil, v)
++}
++
++func TestParseDeletedRule(t *testing.T) {
++	for _, family := range []uint8{unix.AF_INET, unix.AF_INET6} {
++		// A netd rule: uid range (8 bytes, attribute 20), and a per-network
++		// table too large for the header, which then holds RT_TABLE_COMPAT.
++		msg := ruleMsg(t, family, unix.RT_TABLE_COMPAT,
++			netlink.Attribute{Type: unix.FRA_UID_RANGE, Data: append(u32(10000), u32(19999)...)},
++			netlink.Attribute{Type: unix.FRA_PRIORITY, Data: u32(13000)},
++			netlink.Attribute{Type: unix.FRA_TABLE, Data: u32(1017)},
++		)
++		got, err := parseDeletedRule(msg)
++		if want := (RuleDeleted{Table: 1017, Priority: 13000}); err != nil || got != want {
++			t.Errorf("family %d: got %+v, %v; want %+v", family, got, err, want)
++		}
++	}
++
++	// Priority 0 has no attribute, and a small table may be header-only.
++	if got, err := parseDeletedRule(ruleMsg(t, unix.AF_INET, 52)); err != nil || got != (RuleDeleted{Table: 52}) {
++		t.Errorf("header-only rule: got %+v, %v", got, err)
++	}
++
++	if _, err := parseDeletedRule(make([]byte, 11)); err == nil {
++		t.Error("accepted a short header")
++	}
++	bad := ruleMsg(t, unix.AF_INET, 52, netlink.Attribute{Type: unix.FRA_PRIORITY, Data: []byte{1}})
++	if _, err := parseDeletedRule(bad); err == nil {
++		t.Error("accepted a 1-byte priority")
++	}
++}
++
++func TestNetlinkGroupsIncludeIPv6Rules(t *testing.T) {
++	if netlinkGroups&(1<<(unix.RTNLGRP_IPV6_RULE-1)) == 0 {
++		t.Error("IPv6 rule group missing")
++	}
++}
+diff --git a/wgengine/router/osrouter/router_linux.go b/wgengine/router/osrouter/router_linux.go
+index 1b5385d..1273391 100644
+--- a/wgengine/router/osrouter/router_linux.go
++++ b/wgengine/router/osrouter/router_linux.go
+@@ -368,7 +368,7 @@ type AddIPRules struct{
+ // Note that we don't care about the table number. We don't strictly even care
+ // about the priority number. We could just do this in response to any netlink
+ // change. Filtering by known priority ranges cuts back on some logspam.
+-func (r *linuxRouter) onIPRuleDeleted(table uint8, priority uint32) {
++func (r *linuxRouter) onIPRuleDeleted(table uint32, priority uint32) {
+ 	if int(priority) < r.ipPolicyPrefBase || int(priority) >= (r.ipPolicyPrefBase+100) {
+ 		// Not our rule.
+ 		return

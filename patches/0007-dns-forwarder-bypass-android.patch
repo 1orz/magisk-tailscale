@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: 1orz <noreply@github.com>
+Subject: [PATCH] net/dns/resolver: mark upstream UDP queries on Android
+
+---
+ net/dns/resolver/forwarder.go | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/net/dns/resolver/forwarder.go b/net/dns/resolver/forwarder.go
+index c931ccb..4190329 100644
+--- a/net/dns/resolver/forwarder.go
++++ b/net/dns/resolver/forwarder.go
+@@ -35,6 +35,7 @@
+ 	"tailscale.com/net/dnscache"
+ 	"tailscale.com/net/neterror"
+ 	"tailscale.com/net/netmon"
++	"tailscale.com/net/netns"
+ 	"tailscale.com/net/netx"
+ 	"tailscale.com/net/sockstats"
+ 	"tailscale.com/net/tsdial"
+@@ -48,6 +49,7 @@
+ 	"tailscale.com/util/mak"
+ 	"tailscale.com/util/race"
+ 	"tailscale.com/version"
++	"tailscale.com/version/distro"
+ )
+ 
+ // headerBytes is the number of bytes in a DNS message header.
+@@ -503,6 +505,13 @@ func (f *forwarder) setRoutes(routesBySuffix map[dnsname.FQDN][]*dnstype.Resolve
+ var stdNetPacketListener nettype.PacketListenerWithNetIP = nettype.MakePacketListenerWithNetIP(new(net.ListenConfig))
+ 
+ func (f *forwarder) packetListener(ip netip.Addr) (nettype.PacketListenerWithNetIP, error) {
++	// magisk-tailscale-next: on Android the DNS manager DNATs every port 53
++	// packet without the bypass mark to quad-100, so unmarked upstream queries
++	// would loop back into this forwarder. The mark also keeps them out of
++	// another VPN app's tunnel. sendTCP already marks via SystemDial.
++	if distro.Get() == distro.Android {
++		return nettype.MakePacketListenerWithNetIP(netns.Listener(f.logf, f.netMon)), nil
++	}
+ 	if f.linkSel == nil || initListenConfig == nil {
+ 		return stdNetPacketListener, nil
+ 	}

@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: 1orz <noreply@github.com>
+Subject: [PATCH] version/distro: detect Android for GOOS=linux binaries
+
+---
+ version/distro/distro.go | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/version/distro/distro.go b/version/distro/distro.go
+index 5407f8d..7b95f5e 100644
+--- a/version/distro/distro.go
++++ b/version/distro/distro.go
+@@ -34,6 +34,7 @@
+ 	Alpine    = Distro("alpine")
+ 	UBNT      = Distro("ubnt") // Ubiquiti Networks
+ 	JetKVM    = Distro("jetkvm")
++	Android   = Distro("android") // a GOOS=linux binary under an Android kernel, e.g. run by a root module
+ )
+ 
+ var distro lazy.SyncValue[Distro]
+@@ -74,6 +75,12 @@ func haveDir(file string) bool {
+ 
+ func linuxDistro() Distro {
+ 	switch {
++	case have("/dev/__properties__"):
++		// The bionic property area exists on every Android since 5.0 and
++		// never on regular Linux (see feature/androidbin). Checked first:
++		// Android has none of the files the cases below look for, but a
++		// root user may have dropped some in.
++		return Android
+ 	case haveDir("/usr/syno"):
+ 		return Synology
+ 	case have("/usr/local/bin/freenas-debug"):

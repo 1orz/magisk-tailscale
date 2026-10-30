@@ -1,0 +1,127 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: 1orz <noreply@github.com>
+Subject: [PATCH] tsconst, linuxfw, netns: move packet marks clear of netd's
+ bits on Android
+
+---
+ net/netns/netns_linux.go        |  7 ++++++-
+ tsconst/linuxfw.go              | 24 +++++++++++++++++++++++-
+ util/linuxfw/iptables_runner.go |  2 +-
+ util/linuxfw/linuxfw.go         |  8 +++++---
+ 4 files changed, 35 insertions(+), 6 deletions(-)
+
+diff --git a/net/netns/netns_linux.go b/net/netns/netns_linux.go
+index c9ea740..9caa361 100644
+--- a/net/netns/netns_linux.go
++++ b/net/netns/netns_linux.go
+@@ -19,6 +19,7 @@
+ 	"tailscale.com/net/netmon"
+ 	"tailscale.com/tsconst"
+ 	"tailscale.com/types/logger"
++	"tailscale.com/version/distro"
+ )
+ 
+ // socketMarkWorksOnce is the sync.Once & cached value for useSocketMark.
+@@ -113,7 +114,11 @@ func controlC(network, address string, c syscall.RawConn) error {
+ }
+ 
+ func setBypassMark(fd uintptr) error {
+-	if err := unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, tsconst.LinuxBypassMarkNum); err != nil {
++	mark := tsconst.LinuxBypassMarkNum
++	if distro.Get() == distro.Android {
++		mark |= tsconst.AndroidProtectedFromVPNMarkNum
++	}
++	if err := unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, mark); err != nil {
+ 		return fmt.Errorf("setting SO_MARK bypass: %w", err)
+ 	}
+ 	return nil
+diff --git a/tsconst/linuxfw.go b/tsconst/linuxfw.go
+index 3a7a4cf..77f326e 100644
+--- a/tsconst/linuxfw.go
++++ b/tsconst/linuxfw.go
+@@ -3,6 +3,8 @@
+ 
+ package tsconst
+ 
++import "tailscale.com/version/distro"
++
+ // Linux firewall constants used by Tailscale.
+ 
+ // The following bits are added to packet marks for Tailscale use.
+@@ -22,7 +24,7 @@
+ // The constants are in the iptables/iproute2 string format for
+ // matching and setting the bits, so they can be directly embedded in
+ // commands.
+-const (
++var (
+ 	// The mask for reading/writing the 'firewall mask' bits on a packet.
+ 	// See the comment on the const block on why we only use the third byte.
+ 	//
+@@ -41,3 +43,23 @@
+ 	LinuxBypassMark    = "0x80000"
+ 	LinuxBypassMarkNum = 0x80000
+ )
++
++// AndroidProtectedFromVPNMarkNum is netd's protectedFromVpn mark bit. On
++// Android it is added to the bypass mark on tailscaled's own sockets, so
++// that another VPN app's routing rules don't capture them.
++const AndroidProtectedFromVPNMarkNum = 0x20000
++
++// magisk-tailscale-next: on Android, netd owns the low bits of every packet
++// mark (see Fwmark.h in AOSP's system/netd): bits 0-15 the network ID, 16
++// explicitlySelected, 17 protectedFromVpn, 18-19 permission and 20
++// uidBillingDone. The bits 16:23 used above collide with those, so there
++// Tailscale's marks move to the unused bits 25:28. See
++// https://www.kxxt.dev/blog/full-tailscale-on-android-and-remote-unlocking/
++func init() {
++	if distro.Get() != distro.Android {
++		return
++	}
++	LinuxFwmarkMask, LinuxFwmarkMaskNum = "0x1e000000", 0x1e000000
++	LinuxSubnetRouteMark, LinuxSubnetRouteMarkNum = "0x8000000", 0x8000000
++	LinuxBypassMark, LinuxBypassMarkNum = "0x10000000", 0x10000000
++}
+diff --git a/util/linuxfw/iptables_runner.go b/util/linuxfw/iptables_runner.go
+index ad983fb..5eeff57 100644
+--- a/util/linuxfw/iptables_runner.go
++++ b/util/linuxfw/iptables_runner.go
+@@ -548,7 +548,7 @@ func (i *iptablesRunner) AddConnmarkSaveRule() error {
+ 		for _, rule := range rules {
+ 			if strings.Contains(rule, "CONNMARK") &&
+ 				strings.Contains(rule, "restore-mark") &&
+-				strings.Contains(rule, "ctmask 0xff0000") {
++				strings.Contains(rule, "ctmask "+fwmarkMask) {
+ 				// Rules already exist, skip adding
+ 				return nil
+ 			}
+diff --git a/util/linuxfw/linuxfw.go b/util/linuxfw/linuxfw.go
+index eb2da18..5466a09 100644
+--- a/util/linuxfw/linuxfw.go
++++ b/util/linuxfw/linuxfw.go
+@@ -78,7 +78,9 @@ func (e FWModeNotSupportedError) Unwrap() error {
+ // The constants are in the iptables/iproute2 string format for
+ // matching and setting the bits, so they can be directly embedded in
+ // commands.
+-const (
++//
++// These are variables because tsconst switches them on Android.
++var (
+ 	fwmarkMask         = tsconst.LinuxFwmarkMask
+ 	fwmarkMaskNum      = tsconst.LinuxFwmarkMaskNum
+ 	subnetRouteMark    = tsconst.LinuxSubnetRouteMark
+@@ -95,13 +97,13 @@ func getTailscaleFwmarkMaskNeg() []byte {
+ 
+ // getTailscaleFwmarkMask returns the TailscaleFwmarkMask in native byte order.
+ func getTailscaleFwmarkMask() []byte {
+-	return nativeEndianUint32(fwmarkMaskNum)
++	return nativeEndianUint32(uint32(fwmarkMaskNum))
+ }
+ 
+ // getTailscaleSubnetRouteMark returns the TailscaleSubnetRouteMark
+ // in native byte order.
+ func getTailscaleSubnetRouteMark() []byte {
+-	return nativeEndianUint32(subnetRouteMarkNum)
++	return nativeEndianUint32(uint32(subnetRouteMarkNum))
+ }
+ 
+ // nativeEndianUint32 returns v as a 4-byte slice in the host's native byte order.

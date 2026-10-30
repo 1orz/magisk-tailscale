@@ -1,0 +1,396 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: 1orz <noreply@github.com>
+Subject: [PATCH] net/dns: redirect DNS to quad-100 with iptables on Android
+
+---
+ net/dns/manager_androidroot_linux.go      | 314 ++++++++++++++++++++++
+ net/dns/manager_androidroot_linux_test.go |  44 +++
+ net/dns/manager_linux.go                  |   3 +
+ 3 files changed, 361 insertions(+)
+ create mode 100644 net/dns/manager_androidroot_linux.go
+ create mode 100644 net/dns/manager_androidroot_linux_test.go
+
+diff --git a/net/dns/manager_androidroot_linux.go b/net/dns/manager_androidroot_linux.go
+new file mode 100644
+index 0000000..d3ebb04
+--- /dev/null
++++ b/net/dns/manager_androidroot_linux.go
+@@ -0,0 +1,314 @@
++// Copyright (c) Tailscale Inc & contributors
++// SPDX-License-Identifier: BSD-3-Clause
++
++//go:build !android
++
++package dns
++
++import (
++	"bufio"
++	"bytes"
++	"context"
++	"errors"
++	"fmt"
++	"net/netip"
++	"os/exec"
++	"slices"
++	"strconv"
++	"strings"
++	"sync"
++	"time"
++
++	"tailscale.com/net/netmon"
++	"tailscale.com/net/tsaddr"
++	"tailscale.com/tsconst"
++	"tailscale.com/types/logger"
++	"tailscale.com/util/eventbus"
++)
++
++// androidChain is the nat chain, jumped to first from OUTPUT, holding the
++// DNS redirect rules.
++const androidChain = "ts-dns"
++
++// androidManager is the OSConfigurator for a GOOS=linux tailscaled running
++// as root on Android (distro.Android), such as from a Magisk module.
++//
++// Android has no /etc/resolv.conf: apps resolve names through netd, which
++// sends the queries to the default network's DNS servers itself. So
++// instead of editing a config file, the manager redirects outgoing DNS
++// (port 53) to quad-100 with an iptables DNAT, except for tailscaled's own
++// queries, which carry the bypass mark. Being all-or-nothing, it can't do
++// split DNS; the DNS manager then forwards non-Tailscale names to the
++// servers GetBaseConfig reports, which it reads from netd.
++//
++// Those servers change with the default network, which netd can switch
++// with nothing but a rule change (e.g. back to Wi-Fi once it validates), so
++// the manager re-reads them after network and rule changes and, when they
++// differ from what it last reported, publishes TrampleDNS to make the DNS
++// manager apply the configuration again.
++//
++// Private DNS (DNS-over-TLS on port 853) is not redirected, so MagicDNS
++// only works for apps while Private DNS is off or in its automatic mode
++// against a server without DoT.
++type androidManager struct {
++	logf       logger.Logf
++	ec         *eventbus.Client // nil without a bus
++	tramplePub *eventbus.Publisher[TrampleDNS]
++
++	mu         sync.Mutex
++	active     bool         // whether the redirect is installed
++	lastBase   []netip.Addr // servers last returned by GetBaseConfig
++	checkTimer *time.Timer  // pending checkBase, or nil
++	closed     bool
++}
++
++// androidBaseSettle is how long network and rule changes must be quiet
++// before the base servers are re-read: netd switches the default network
++// by rewriting several rules.
++const androidBaseSettle = time.Second
++
++func newAndroidManager(logf logger.Logf, bus *eventbus.Bus) *androidManager {
++	m := &androidManager{logf: logf}
++	// Remove rules left behind by a tailscaled that didn't shut down cleanly.
++	m.removeRules()
++	if bus != nil {
++		m.ec = bus.Client("dns.androidManager")
++		m.tramplePub = eventbus.Publish[TrampleDNS](m.ec)
++		eventbus.SubscribeFunc(m.ec, func(netmon.ChangeDelta) { m.scheduleCheckBase() })
++		eventbus.SubscribeFunc(m.ec, func(netmon.RuleDeleted) { m.scheduleCheckBase() })
++	}
++	return m
++}
++
++func (m *androidManager) scheduleCheckBase() {
++	m.mu.Lock()
++	defer m.mu.Unlock()
++	if m.closed {
++		return
++	}
++	if m.checkTimer != nil {
++		m.checkTimer.Reset(androidBaseSettle)
++		return
++	}
++	m.checkTimer = time.AfterFunc(androidBaseSettle, m.checkBase)
++}
++
++// checkBase asks the DNS manager to reapply its configuration if the
++// default network's servers changed since GetBaseConfig last ran.
++func (m *androidManager) checkBase() {
++	servers, _ := androidDefaultNameservers()
++	m.mu.Lock()
++	m.checkTimer = nil
++	changed := m.active && !m.closed && !slices.Equal(servers, m.lastBase)
++	old := m.lastBase
++	m.mu.Unlock()
++	if changed {
++		m.logf("dns: android: default network DNS servers changed from %v to %v", old, servers)
++		m.tramplePub.Publish(TrampleDNS{LastTrample: time.Now()})
++	}
++}
++
++func (m *androidManager) SetDNS(cfg OSConfig) error {
++	m.mu.Lock()
++	defer m.mu.Unlock()
++
++	if len(cfg.Nameservers) == 0 {
++		if m.active {
++			m.removeRules()
++			m.active = false
++			m.logf("dns: android: redirect removed")
++		}
++		return nil
++	}
++	if err := m.installRules(); err != nil {
++		m.removeRules()
++		m.active = false
++		return err
++	}
++	if !m.active {
++		m.logf("dns: android: redirecting DNS to %v", tsaddr.TailscaleServiceIP())
++	}
++	m.active = true
++	return nil
++}
++
++func (m *androidManager) SupportsSplitDNS() bool { return false }
++
++func (m *androidManager) GetBaseConfig() (OSConfig, error) {
++	servers, err := androidDefaultNameservers()
++	m.mu.Lock()
++	m.lastBase = servers
++	m.mu.Unlock()
++	if err != nil {
++		return OSConfig{}, err
++	}
++	if len(servers) == 0 {
++		return OSConfig{}, ErrGetBaseConfigNoResolvers
++	}
++	return OSConfig{Nameservers: servers}, nil
++}
++
++func (m *androidManager) Close() error {
++	if m.ec != nil {
++		m.ec.Close()
++	}
++	m.mu.Lock()
++	defer m.mu.Unlock()
++	m.closed = true
++	if m.checkTimer != nil {
++		m.checkTimer.Stop()
++	}
++	m.removeRules()
++	m.active = false
++	return nil
++}
++
++// installRules (re)creates the redirect chain for IPv4 and, where the
++// kernel supports IPv6 NAT, IPv6.
++func (m *androidManager) installRules() error {
++	if err := installAndroidChain("iptables", tsaddr.TailscaleServiceIP(), "127.0.0.0/8"); err != nil {
++		return fmt.Errorf("installing IPv4 DNS redirect: %w", err)
++	}
++	if err := installAndroidChain("ip6tables", tsaddr.TailscaleServiceIPv6(), "::1/128"); err != nil {
++		m.logf("dns: android: IPv6 DNS redirect unavailable: %v", err)
++	}
++	return nil
++}
++
++func installAndroidChain(cmd string, quad100 netip.Addr, loopback string) error {
++	// Creating an existing chain fails; flushing makes this idempotent.
++	_ = runIptables(cmd, "-N", androidChain)
++	if err := runIptables(cmd, "-F", androidChain); err != nil {
++		return err
++	}
++	mark := tsconst.LinuxBypassMark + "/" + tsconst.LinuxFwmarkMask
++	dst := netip.AddrPortFrom(quad100, 53).String()
++	rules := [][]string{
++		// tailscaled's own upstream queries.
++		{"-m", "mark", "--mark", mark, "-j", "RETURN"},
++		// Local resolvers, e.g. an ad blocker listening on loopback.
++		{"-d", loopback, "-j", "RETURN"},
++		{"-d", quad100.String(), "-j", "RETURN"},
++		{"-p", "udp", "--dport", "53", "-j", "DNAT", "--to-destination", dst},
++		{"-p", "tcp", "--dport", "53", "-j", "DNAT", "--to-destination", dst},
++	}
++	for _, r := range rules {
++		if err := runIptables(cmd, append([]string{"-A", androidChain}, r...)...); err != nil {
++			return err
++		}
++	}
++	if runIptables(cmd, "-C", "OUTPUT", "-j", androidChain) != nil {
++		return runIptables(cmd, "-I", "OUTPUT", "1", "-j", androidChain)
++	}
++	return nil
++}
++
++func (m *androidManager) removeRules() {
++	for _, cmd := range []string{"iptables", "ip6tables"} {
++		for runIptables(cmd, "-D", "OUTPUT", "-j", androidChain) == nil {
++		}
++		_ = runIptables(cmd, "-F", androidChain)
++		_ = runIptables(cmd, "-X", androidChain)
++	}
++}
++
++func runIptables(cmd string, args ...string) error {
++	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
++	defer cancel()
++	args = append([]string{"-w", "-t", "nat"}, args...)
++	out, err := exec.CommandContext(ctx, cmd, args...).CombinedOutput()
++	if err != nil {
++		return fmt.Errorf("%s %s: %w: %s", cmd, strings.Join(args, " "), err, bytes.TrimSpace(out))
++	}
++	return nil
++}
++
++// androidDefaultNameservers returns the DNS servers netd uses for the
++// default network.
++func androidDefaultNameservers() ([]netip.Addr, error) {
++	netID, err := androidDefaultNetID()
++	if err != nil {
++		return nil, err
++	}
++	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
++	defer cancel()
++	out, err := exec.CommandContext(ctx, "dumpsys", "dnsresolver").Output()
++	if err != nil {
++		return nil, fmt.Errorf("dumpsys dnsresolver: %w", err)
++	}
++	return parseDNSResolverDump(out, netID), nil
++}
++
++// androidDefaultNetID returns the netd network ID of the default network,
++// from the "Active default network: N" line near the top of
++// `dumpsys connectivity`. Only as much of the (long) dump as needed is read.
++func androidDefaultNetID() (int, error) {
++	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
++	cmd := exec.CommandContext(ctx, "dumpsys", "connectivity")
++	stdout, err := cmd.StdoutPipe()
++	if err != nil {
++		cancel()
++		return 0, err
++	}
++	if err := cmd.Start(); err != nil {
++		cancel()
++		return 0, fmt.Errorf("dumpsys connectivity: %w", err)
++	}
++	// Stop dumpsys once the line is found, then reap it.
++	defer cmd.Wait()
++	defer cancel()
++
++	const prefix = "Active default network: "
++	sc := bufio.NewScanner(stdout)
++	sc.Buffer(nil, 1<<20)
++	for sc.Scan() {
++		line := strings.TrimSpace(sc.Text())
++		if v, ok := strings.CutPrefix(line, prefix); ok {
++			if v == "none" {
++				return 0, ErrGetBaseConfigNoResolvers
++			}
++			return strconv.Atoi(v)
++		}
++	}
++	return 0, errors.New("dumpsys connectivity: no default network line")
++}
++
++// parseDNSResolverDump extracts netID's servers from `dumpsys dnsresolver`
++// output, which lists them per network:
++//
++//	NetId: 100
++//	  ...
++//	  DNS servers: # IP (total, successes, ...)
++//	    10.0.2.3 (64, 64, 0, 0, 0, 43ms, 58s)
++//	  No search domains defined
++func parseDNSResolverDump(dump []byte, netID int) []netip.Addr {
++	var servers []netip.Addr
++	inNet, inServers := false, false
++	for _, line := range strings.Split(string(dump), "\n") {
++		if v, ok := strings.CutPrefix(line, "NetId: "); ok {
++			id, err := strconv.Atoi(strings.TrimSpace(v))
++			inNet, inServers = err == nil && id == netID, false
++			continue
++		}
++		if !inNet {
++			continue
++		}
++		trimmed := strings.TrimSpace(line)
++		if strings.HasPrefix(trimmed, "DNS servers:") {
++			inServers = true
++			continue
++		}
++		if !inServers {
++			continue
++		}
++		if !strings.HasPrefix(line, "    ") {
++			// Back at the network's own indentation: end of the list.
++			break
++		}
++		field, _, _ := strings.Cut(trimmed, " ")
++		if ip, err := netip.ParseAddr(field); err == nil {
++			servers = append(servers, ip)
++		}
++	}
++	return servers
++}
+diff --git a/net/dns/manager_androidroot_linux_test.go b/net/dns/manager_androidroot_linux_test.go
+new file mode 100644
+index 0000000..49a977b
+--- /dev/null
++++ b/net/dns/manager_androidroot_linux_test.go
+@@ -0,0 +1,44 @@
++// Copyright (c) Tailscale Inc & contributors
++// SPDX-License-Identifier: BSD-3-Clause
++
++//go:build !android
++
++package dns
++
++import (
++	"net/netip"
++	"slices"
++	"testing"
++)
++
++const testDNSResolverDump = `NetId: 100
++  DnsEvent subsampling map: 4:110 7:110 2:110 0:400 default:6
++  DNS servers: # IP (total, successes, errors, timeouts, internal errors, RTT avg, last sample)
++    10.0.2.3 (64, 64, 0, 0, 0, 43ms, 58s)
++    2001:4860:4860::8888 (3, 3, 0, 0, 0, 20ms, 10s)
++  No search domains defined
++  Private DNS mode: OPPORTUNISTIC
++  Private DNS configuration (1 entries)
++    10.0.2.3 name{} status{fail}
++NetId: 101
++  DNS servers: # IP (total, successes, errors, timeouts, internal errors, RTT avg, last sample)
++    192.168.1.1 (1, 1, 0, 0, 0, 5ms, 1s)
++  No search domains defined
++`
++
++func TestParseDNSResolverDump(t *testing.T) {
++	tests := []struct {
++		netID int
++		want  []netip.Addr
++	}{
++		{100, []netip.Addr{netip.MustParseAddr("10.0.2.3"), netip.MustParseAddr("2001:4860:4860::8888")}},
++		{101, []netip.Addr{netip.MustParseAddr("192.168.1.1")}},
++		{102, nil},
++	}
++	for _, tt := range tests {
++		got := parseDNSResolverDump([]byte(testDNSResolverDump), tt.netID)
++		if !slices.Equal(got, tt.want) {
++			t.Errorf("netID %d: got %v, want %v", tt.netID, got, tt.want)
++		}
++	}
++}
+diff --git a/net/dns/manager_linux.go b/net/dns/manager_linux.go
+index 392b64b..c12c25e 100644
+--- a/net/dns/manager_linux.go
++++ b/net/dns/manager_linux.go
+@@ -68,6 +68,9 @@ func NewOSConfigurator(logf logger.Logf, health *health.Tracker, bus *eventbus.B
+ 	if !buildfeatures.HasDNS || distro.Get() == distro.JetKVM {
+ 		return NewNoopManager()
+ 	}
++	if distro.Get() == distro.Android {
++		return newAndroidManager(logf, bus), nil
++	}
+ 
+ 	env := newOSConfigEnv{
+ 		fs:              directFS{},

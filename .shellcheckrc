@@ -1,0 +1,4 @@
+source-path=SCRIPTDIR
+external-sources=true
+# Magisk installer variables and helpers are defined by the caller.
+disable=SC2034,SC2154

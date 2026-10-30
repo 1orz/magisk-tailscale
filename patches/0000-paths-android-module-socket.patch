@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: 1orz <noreply@github.com>
+Subject: [PATCH] paths: default CLI socket to the root module's run dir on
+ Android
+
+
+diff --git a/paths/paths.go b/paths/paths.go
+index 77605a1..11722e2 100644
+--- a/paths/paths.go
++++ b/paths/paths.go
+@@ -50,6 +50,10 @@ func WindowsDevTailscaledSocket() string {
+ 	return `\\.\pipe\tailscale-` + u.Uid
+ }
+ 
++// androidModuleRunDir is the runtime directory of the
++// magisk-tailscale-next root module on Android.
++const androidModuleRunDir = "/data/adb/tailscale-next/run"
++
+ // DefaultTailscaledSocket returns the path to the tailscaled Unix socket
+ // or the empty string if there's no reasonable default.
+ func DefaultTailscaledSocket() string {
+@@ -70,6 +74,19 @@ func DefaultTailscaledSocket() string {
+ 		// agree on an absolute path.
+ 		return filepath.Join(os.TempDir(), "tailscaled.sock")
+ 	}
++	if runtime.GOOS == "linux" {
++		// magisk-tailscale-next: a GOOS=linux tailscaled run by the root
++		// module on Android has no /var/run. Point the CLI at the socket
++		// the module's service starts the daemon with, so a bare
++		// `tailscale status` from a root shell works without --socket.
++		// /dev/__properties__ only exists under an Android kernel (see
++		// feature/androidbin).
++		if _, err := os.Stat("/dev/__properties__"); err == nil {
++			if fi, err := os.Stat(androidModuleRunDir); err == nil && fi.IsDir() {
++				return filepath.Join(androidModuleRunDir, "tailscaled.sock")
++			}
++		}
++	}
+ 	switch distro.Get() {
+ 	case distro.Synology:
+ 		if distro.DSMVersion() == 6 {

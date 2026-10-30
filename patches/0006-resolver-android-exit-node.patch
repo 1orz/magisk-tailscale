@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: 1orz <noreply@github.com>
+Subject: [PATCH] net/dns/resolver: answer exit node DNS queries via netd on
+ Android
+
+---
+ net/dns/resolver/tsdns.go | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/net/dns/resolver/tsdns.go b/net/dns/resolver/tsdns.go
+index 3e22a83..216fb1f 100644
+--- a/net/dns/resolver/tsdns.go
++++ b/net/dns/resolver/tsdns.go
+@@ -40,6 +40,7 @@
+ 	"tailscale.com/util/cloudenv"
+ 	"tailscale.com/util/dnsname"
+ 	"tailscale.com/util/set"
++	"tailscale.com/version/distro"
+ )
+ 
+ const dnsSymbolicFQDN = "magicdns.localhost-tailscale-daemon."
+@@ -489,6 +490,14 @@ func (r *Resolver) HandlePeerDNSQuery(ctx context.Context, q []byte, from netip.
+ 		return marshalResponse(resp)
+ 	}
+ 
++	// A GOOS=linux tailscaled on Android has no /etc/resolv.conf to find
++	// an upstream in. Resolve like the Android app does, with the net
++	// package, via net.DefaultResolver: feature/androiddns points that one
++	// (and only that one) at netd.
++	if distro.Get() == distro.Android {
++		return handleExitNodeDNSQueryWithNetPkg(ctx, r.logf, net.DefaultResolver, resp)
++	}
++
+ 	switch runtime.GOOS {
+ 	default:
+ 		return nil, errors.New("unsupported exit node OS")

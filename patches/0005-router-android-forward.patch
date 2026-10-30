@@ -1,0 +1,315 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: 1orz <noreply@github.com>
+Subject: [PATCH] wgengine/router/osrouter: route forwarded traffic on Android
+
+---
+ .../osrouter/router_androidroot_linux.go      | 185 ++++++++++++++++++
+ .../osrouter/router_androidroot_linux_test.go |  27 +++
+ wgengine/router/osrouter/router_linux.go      |  33 +++-
+ 3 files changed, 243 insertions(+), 2 deletions(-)
+ create mode 100644 wgengine/router/osrouter/router_androidroot_linux.go
+ create mode 100644 wgengine/router/osrouter/router_androidroot_linux_test.go
+
+diff --git a/wgengine/router/osrouter/router_androidroot_linux.go b/wgengine/router/osrouter/router_androidroot_linux.go
+new file mode 100644
+index 0000000..0cd8b82
+--- /dev/null
++++ b/wgengine/router/osrouter/router_androidroot_linux.go
+@@ -0,0 +1,185 @@
++// Copyright (c) Tailscale Inc & contributors
++// SPDX-License-Identifier: BSD-3-Clause
++
++//go:build !android
++
++package osrouter
++
++import (
++	"context"
++	"errors"
++	"net/netip"
++	"os/exec"
++	"strings"
++	"time"
++
++	"github.com/vishvananda/netlink"
++	"tailscale.com/tsconst"
++	"tailscale.com/types/logger"
++)
++
++// This file holds the parts of the Linux router specific to running as
++// root on Android (distro.Android), where netd owns policy routing.
++
++// androidIPPolicyPrefBase is ipPolicyPrefBase on Android: just after netd's
++// legacy_system rule (10000), before its per-app VPN and network rules
++// (11000+).
++const androidIPPolicyPrefBase = 10500
++
++// androidForwardPriority is the priority, added to ipPolicyPrefBase, of the
++// rule routing traffic forwarded from the tun when this device is a subnet
++// router or exit node.
++//
++// netd only routes packets that are locally generated (its rules match
++// "iif lo") or that come from a tethering downstream, so forwarded packets
++// from the tun would hit its final "unreachable" rule. Like netd does for
++// tethering, the rule sends them to the default network's table. That table
++// changes with the default network, so the rule is updated on link changes.
++const androidForwardPriority = 80
++
++// androidIPFwdRequester names this daemon to netd's ipfwd, which keeps IP
++// forwarding on while any requester (also tethering) wants it, rather than
++// tethering turning it off underneath us.
++const androidIPFwdRequester = "tailscale"
++
++// androidForwardingSettle is how long scheduleAndroidForwardingUpdate waits
++// for routing changes to settle. netd switches the default network by
++// rewriting several rules; checking mid-way could find no default network.
++const androidForwardingSettle = time.Second
++
++// scheduleAndroidForwardingUpdate re-runs updateAndroidForwardingLocked once
++// network and rule changes have been quiet for androidForwardingSettle.
++// netmon's ChangeDelta alone isn't enough: when Wi-Fi returns, its
++// interface comes up while cellular is still the default network, and the
++// switch to Wi-Fi happens later, in netd's rules only.
++func (r *linuxRouter) scheduleAndroidForwardingUpdate() {
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	if r.closed.Load() {
++		return
++	}
++	if r.androidFwdTimer != nil {
++		r.androidFwdTimer.Reset(androidForwardingSettle)
++		return
++	}
++	r.androidFwdTimer = time.AfterFunc(androidForwardingSettle, func() {
++		r.mu.Lock()
++		defer r.mu.Unlock()
++		if !r.closed.Load() {
++			r.updateAndroidForwardingLocked()
++		}
++	})
++}
++
++// updateAndroidForwardingLocked makes the forwarding rule and IP forwarding
++// match r.androidAdvertising and the current default network. r.mu must
++// be held.
++func (r *linuxRouter) updateAndroidForwardingLocked() {
++	var want4, want6 int
++	if r.androidAdvertising {
++		want4 = androidDefaultTable(netip.MustParseAddr("8.8.8.8"))
++		want6 = androidDefaultTable(netip.MustParseAddr("2001:4860:4860::8888"))
++	}
++	r.androidFwdTable4 = r.setAndroidForwardRule(netlink.FAMILY_V4, r.androidFwdTable4, want4)
++	if r.getV6Available() {
++		r.androidFwdTable6 = r.setAndroidForwardRule(netlink.FAMILY_V6, r.androidFwdTable6, want6)
++	}
++
++	if r.androidAdvertising != r.androidIPFwd {
++		verb := "disable"
++		if r.androidAdvertising {
++			verb = "enable"
++		}
++		if err := runNdc("ipfwd", verb, androidIPFwdRequester); err != nil {
++			r.logf("ndc ipfwd %s: %v", verb, err)
++			if r.androidAdvertising {
++				r.enableIPForwarding()
++			}
++		}
++		r.androidIPFwd = r.androidAdvertising
++	}
++}
++
++// setAndroidForwardRule replaces the forwarding rule for family routing to
++// table have with one routing to table want, where 0 means no rule. It
++// returns the table now in use.
++func (r *linuxRouter) setAndroidForwardRule(family, have, want int) int {
++	if have == want {
++		return have
++	}
++	if have != 0 {
++		if err := netlink.RuleDel(r.androidForwardRule(family, have)); err != nil && !errors.Is(err, errENOENT) {
++			r.logf("removing forwarding rule to table %d: %v", have, err)
++		}
++	}
++	if want == 0 {
++		return 0
++	}
++	if err := netlink.RuleAdd(r.androidForwardRule(family, want)); err != nil && !errors.Is(err, errEEXIST) {
++		r.logf("adding forwarding rule to table %d: %v", want, err)
++		return 0
++	}
++	r.logf("routing traffic forwarded from %s via table %d", r.tunname, want)
++	return want
++}
++
++func (r *linuxRouter) androidForwardRule(family, table int) *netlink.Rule {
++	ru := netlink.NewRule()
++	ru.Family = family
++	ru.Priority = r.ipPolicyPrefBase + androidForwardPriority
++	ru.IifName = r.tunname
++	ru.Table = table
++	return ru
++}
++
++// androidDefaultTable returns the routing table netd uses for traffic to
++// dst from tailscaled itself, i.e. the default network's table, or 0 if
++// there is none. Asking with the bypass mark skips the Tailscale table, in
++// case this device is also using an exit node.
++func androidDefaultTable(dst netip.Addr) int {
++	routes, err := netlink.RouteGetWithOptions(dst.AsSlice(), &netlink.RouteGetOptions{
++		Mark: uint32(tsconst.LinuxBypassMarkNum),
++	})
++	if err != nil || len(routes) == 0 || routes[0].Table == tailscaleRouteTable.Num {
++		return 0
++	}
++	return routes[0].Table
++}
++
++// cleanUpAndroidForwarding removes forwarding state a previous tailscaled
++// may have left behind. Rules referring to a deleted tun stay in the kernel
++// (as "[detached]"), so they are removed by priority.
++func cleanUpAndroidForwarding(logf logger.Logf) {
++	for _, family := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
++		for {
++			ru := netlink.NewRule()
++			ru.Family = family
++			ru.Priority = androidIPPolicyPrefBase + androidForwardPriority
++			if netlink.RuleDel(ru) != nil {
++				break
++			}
++		}
++	}
++	if err := runNdc("ipfwd", "disable", androidIPFwdRequester); err != nil {
++		logf("ndc ipfwd disable: %v", err)
++	}
++}
++
++// runNdc runs netd's ndc command and checks its reply code; ndc itself
++// exits 0 even when the command fails.
++func runNdc(args ...string) error {
++	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
++	defer cancel()
++	out, err := exec.CommandContext(ctx, "ndc", args...).CombinedOutput()
++	if err != nil {
++		return err
++	}
++	if reply := strings.TrimSpace(string(out)); !strings.HasPrefix(reply, "200 ") {
++		return &ndcError{reply}
++	}
++	return nil
++}
++
++type ndcError struct{ reply string }
++
++func (e *ndcError) Error() string { return "ndc: " + e.reply }
+diff --git a/wgengine/router/osrouter/router_androidroot_linux_test.go b/wgengine/router/osrouter/router_androidroot_linux_test.go
+new file mode 100644
+index 0000000..a4ebf34
+--- /dev/null
++++ b/wgengine/router/osrouter/router_androidroot_linux_test.go
+@@ -0,0 +1,27 @@
++// Copyright (c) Tailscale Inc & contributors
++// SPDX-License-Identifier: BSD-3-Clause
++
++//go:build !android
++
++package osrouter
++
++import (
++	"testing"
++
++	"github.com/vishvananda/netlink"
++)
++
++func TestAndroidForwardRule(t *testing.T) {
++	r := &linuxRouter{ipPolicyPrefBase: androidIPPolicyPrefBase, tunname: "tailscale0"}
++	ru := r.androidForwardRule(netlink.FAMILY_V4, 1012)
++	if ru.IifName != "tailscale0" || ru.Table != 1012 || ru.Family != netlink.FAMILY_V4 {
++		t.Errorf("got %+v, want iif tailscale0 lookup 1012", ru)
++	}
++	// After the Tailscale table rule (so a device using an exit node routes
++	// through it), before netd's per-app rules at 11000, and inside the
++	// range onIPRuleDeleted watches.
++	main := androidIPPolicyPrefBase + androidIPRules[0].Priority
++	if ru.Priority <= main || ru.Priority >= 11000 || ru.Priority >= r.ipPolicyPrefBase+100 {
++		t.Errorf("forwarding rule priority %d not in (%d, 11000)", ru.Priority, main)
++	}
++}
+diff --git a/wgengine/router/osrouter/router_linux.go b/wgengine/router/osrouter/router_linux.go
+index f7184d9..1b5385d 100644
+--- a/wgengine/router/osrouter/router_linux.go
++++ b/wgengine/router/osrouter/router_linux.go
+@@ -112,6 +112,13 @@ type linuxRouter struct {
+ 	cgnatMode         linuxfw.CGNATMode
+ 	magicsockPortV4   uint16
+ 	magicsockPortV6   uint16
++
++	// Android only; see router_androidroot_linux.go.
++	androidAdvertising bool // whether subnet routes (or exit node) are advertised
++	androidFwdTable4   int  // table of the installed IPv4 forwarding rule, or 0
++	androidFwdTable6   int  // table of the installed IPv6 forwarding rule, or 0
++	androidIPFwd       bool // whether IP forwarding was requested from netd
++	androidFwdTimer    *time.Timer
+ }
+ 
+ func newUserspaceRouter(logf logger.Logf, tunDev tun.Device, netMon *netmon.Monitor, health *health.Tracker, bus *eventbus.Bus) (router.Router, error) {
+@@ -145,6 +152,10 @@ func newUserspaceRouterAdvanced(logf logger.Logf, tunname string, netMon *netmon
+ 	r.rulesAddedPub = eventbus.Publish[AddIPRules](ec)
+ 	eventbus.SubscribeFunc(ec, func(rs netmon.RuleDeleted) {
+ 		r.onIPRuleDeleted(rs.Table, rs.Priority)
++		if getDistroFunc() == distro.Android {
++			// netd swaps its rules when the default network changes.
++			r.scheduleAndroidForwardingUpdate()
++		}
+ 	})
+ 	eventbus.SubscribeFunc(ec, func(pu router.PortUpdate) {
+ 		r.logf("portUpdate(port=%v, network=%s)", pu.UDPPort, pu.EndpointNetwork)
+@@ -197,8 +208,11 @@ func newUserspaceRouterAdvanced(logf logger.Logf, tunname string, netMon *netmon
+ 	// netd's legacy_system rule (10000) and before its per-app VPN and
+ 	// network rules (11000+).
+ 	if getDistroFunc() == distro.Android {
+-		r.ipPolicyPrefBase = 10500
+-		r.logf("Android detected, switching policy base priority to 10500")
++		r.ipPolicyPrefBase = androidIPPolicyPrefBase
++		r.logf("Android detected, switching policy base priority to %d", androidIPPolicyPrefBase)
++		eventbus.SubscribeFunc(ec, func(netmon.ChangeDelta) {
++			r.scheduleAndroidForwardingUpdate()
++		})
+ 	}
+ 
+ 	r.fixupWSLMTU()
+@@ -404,6 +418,14 @@ func (r *linuxRouter) Close() error {
+ 	}
+ 	r.eventClient.Close()
+ 
++	if getDistroFunc() == distro.Android {
++		if r.androidFwdTimer != nil {
++			r.androidFwdTimer.Stop()
++		}
++		r.androidAdvertising = false
++		r.updateAndroidForwardingLocked()
++	}
++
+ 	// Clean up connmark rules
+ 	if err := r.nfr.DelConnmarkSaveRule(); err != nil {
+ 		r.logf("warning: failed to delete connmark rules: %v", err)
+@@ -603,6 +625,10 @@ func (r *linuxRouter) Set(cfg *router.Config) error {
+ 	if getDistroFunc() == distro.Gokrazy && advertisingRoutes {
+ 		r.enableIPForwarding()
+ 	}
++	if getDistroFunc() == distro.Android {
++		r.androidAdvertising = advertisingRoutes
++		r.updateAndroidForwardingLocked()
++	}
+ 
+ 	// Remove the rule to drop off-tailnet CGNAT traffic, if needed.
+ 	if netfilterOn || r.netfilterMode == netfilterNoDivert {
+@@ -1978,6 +2004,9 @@ func cleanUp(logf logger.Logf, interfaceName string) {
+ 		linuxfw.IPTablesCleanUp(logf)
+ 		linuxfw.NfTablesCleanUp(logf)
+ 	}
++	if getDistroFunc() == distro.Android {
++		cleanUpAndroidForwarding(logf)
++	}
+ 	removeOrphanedAddrsForCleanup(logf, osCommandRunner{ambientCapNetAdmin: useAmbientCaps()}, interfaceName)
+ }
+ 

@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: 1orz <noreply@github.com>
+Subject: [PATCH] net/dns: leave other VPNs' DNS alone on Android
+
+---
+ net/dns/manager_androidroot_linux.go | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/net/dns/manager_androidroot_linux.go b/net/dns/manager_androidroot_linux.go
+index d3ebb04..5f56abb 100644
+--- a/net/dns/manager_androidroot_linux.go
++++ b/net/dns/manager_androidroot_linux.go
+@@ -47,6 +47,11 @@
+ // differ from what it last reported, publishes TrampleDNS to make the DNS
+ // manager apply the configuration again.
+ //
++// Queries routed into another VPN app's tunnel are left alone: that VPN
++// resolves them itself, often through its proxy, and answers from the
++// local network's servers could be wrong for it. Apps it doesn't cover
++// still get MagicDNS.
++//
+ // Private DNS (DNS-over-TLS on port 853) is not redirected, so MagicDNS
+ // only works for apps while Private DNS is off or in its automatic mode
+ // against a server without DoT.
+@@ -186,6 +191,8 @@ func installAndroidChain(cmd string, quad100 netip.Addr, loopback string) error
+ 	rules := [][]string{
+ 		// tailscaled's own upstream queries.
+ 		{"-m", "mark", "--mark", mark, "-j", "RETURN"},
++		// Another VPN app's tunnel; VpnService names its interfaces tunN.
++		{"-o", "tun+", "-j", "RETURN"},
+ 		// Local resolvers, e.g. an ad blocker listening on loopback.
+ 		{"-d", loopback, "-j", "RETURN"},
+ 		{"-d", quad100.String(), "-j", "RETURN"},

@@ -1,0 +1,89 @@
+# Daily: release when Tailscale ships a new stable version, or when module
+# changes landed since the last release. Patch or test failures open an
+# issue instead of releasing.
+name: upstream
+
+on:
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Release a rebuild even if nothing changed
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.check.outputs.release }}
+      reason: ${{ steps.check.outputs.reason }}
+      ts_version: ${{ steps.check.outputs.ts_version }}
+      ts_commit: ${{ steps.check.outputs.ts_commit }}
+      module_rev: ${{ steps.check.outputs.module_rev }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: check
+        env:
+          FORCE: ${{ inputs.force || false }}
+        run: tools/check-upstream.sh
+
+  build:
+    needs: check
+    if: needs.check.outputs.release == 'true'
+    uses: ./.github/workflows/build.yml
+    with:
+      ts_version: ${{ needs.check.outputs.ts_version }}
+      ts_commit: ${{ needs.check.outputs.ts_commit }}
+      module_rev: ${{ needs.check.outputs.module_rev }}
+
+  publish:
+    needs: [check, build]
+    uses: ./.github/workflows/publish.yml
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    with:
+      ts_version: ${{ needs.check.outputs.ts_version }}
+      ts_commit: ${{ needs.check.outputs.ts_commit }}
+      module_rev: ${{ needs.check.outputs.module_rev }}
+      reason: ${{ needs.check.outputs.reason }}
+
+  report:
+    needs: [check, build, publish]
+    if: failure() && needs.check.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update an issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TS_VERSION: ${{ needs.check.outputs.ts_version }}
+          REASON: ${{ needs.check.outputs.reason }}
+          FAILED_PATCH: ${{ needs.build.outputs.failed_patch }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Automated release for tailscale v$TS_VERSION failed"
+          body="Run: $RUN_URL (reason: $REASON)"
+          if [ -n "$FAILED_PATCH" ]; then
+            body="$body"$'\n\n'"\`patches/$FAILED_PATCH\` no longer applies and needs rebasing."
+          fi
+          number=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
