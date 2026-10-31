@@ -1,0 +1,6 @@
+{
+  "version": "v1.104.4-r1",
+  "versionCode": 11040401,
+  "zipUrl": "https://github.com/1orz/magisk-tailscale/releases/download/v1.104.4-r1/magisk-tailscale-next-v1.104.4-r1-arm64.zip",
+  "changelog": "https://raw.githubusercontent.com/1orz/magisk-tailscale/main/changelog.md"
+}
